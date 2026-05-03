@@ -14,7 +14,11 @@
     <img src="https://img.shields.io/badge/Release-v1.0.0-orange.svg" alt="Release">
   </p>
 
-[![](https://socialify.git.ci/xtt-xt/Nemo-Mobile-Mod-Studio/image?description=1&font=Raleway&forks=1&issues=1&language=1&name=1&owner=1&pattern=Circuit%20Board&pulls=1&stargazers=1&theme=Auto)](https://github.com/xtt-xt/Nemo-Mobile-Mod-Studio)
+<div align="center">
+  <a href="https://github.com/xtt-xt/Nemo-Mobile-Mod-Studio">
+    <img src="https://socialify.git.ci/xtt-xt/Nemo-Mobile-Mod-Studio/image?custom_description=%E4%B8%80%E4%B8%AA%E7%BD%91%E6%98%93%E5%9F%BA%E5%B2%A9%E7%89%88%E7%9A%84%E5%8F%AF%E8%A7%86%E5%8C%96%E6%A8%A1%E7%BB%84%E5%88%B6%E4%BD%9C%E8%BD%AF%E4%BB%B6%0AA+visual+modding+software+for+NetEase+Bedrock+Edition.&description=1&font=Inter&forks=1&issues=1&language=1&logo=https%3A%2F%2Fraw.githubusercontent.com%2Fxtt-xt%2FNemo-Mobile-Mod-Studio%2Frefs%2Fheads%2Fmain%2Fapp%2Fsrc%2Fmain%2Fres%2Fdrawable%2Fic_launcher.png&name=1&owner=1&pattern=Charlie+Brown&pulls=1&stargazers=1&theme=Auto" alt="Nemo Mobile Mod Studio" style="max-width: 100%;">
+  </a>
+</div>
 
 </div>
 <hr>
