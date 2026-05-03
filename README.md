@@ -14,6 +14,8 @@
     <img src="https://img.shields.io/badge/Release-v1.0.0-orange.svg" alt="Release">
   </p>
 
+[![](https://socialify.git.ci/xtt-xt/Nemo-Mobile-Mod-Studio/image?description=1&font=Raleway&forks=1&issues=1&language=1&name=1&owner=1&pattern=Circuit%20Board&pulls=1&stargazers=1&theme=Auto)](https://github.com/xtt-xt/Nemo-Mobile-Mod-Studio)
+
 </div>
 <hr>
 
