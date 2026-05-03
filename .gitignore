@@ -1,0 +1,12 @@
+*.apk
+*.aab
+*.keystore
+*.jks
+app/build/
+build/
+.gradle/
+local.properties
+*.iml
+.idea/
+.DS_Store
+Thumbs.db

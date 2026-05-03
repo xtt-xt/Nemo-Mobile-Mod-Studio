@@ -1,0 +1,27 @@
+apply plugin: 'com.android.application'
+
+android {
+    compileSdkVersion 30
+    buildToolsVersion "33.0.0"
+
+    defaultConfig {
+        applicationId "com.xtt.mcmodmaker"
+        minSdkVersion 23
+        targetSdkVersion 26
+        versionCode 1
+        versionName "1.0.0.0"
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+dependencies {
+    implementation files('libs/ore-ui.jar')
+    implementation 'androidx.appcompat:appcompat:1.0.0'
+    // 关键！添加 Kotlin 标准库，否则会找不到 Kotlin 类
+    implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.6.0'
+}
