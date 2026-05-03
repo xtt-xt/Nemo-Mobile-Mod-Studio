@@ -23,15 +23,23 @@
   <!-- 设备兼容性徽章 -->
   <img src="https://img.shields.io/badge/Android-6.0%2B-green?logo=android&style=flat-square" alt="Android 6.0+">
 
-  <!-- 下载按钮 -->
   <br/>
+
+  <!-- GitHub 下载按钮 -->
   <a href="https://github.com/xtt-xt/Nemo-Mobile-Mod-Studio/releases">
-    <img src="https://img.shields.io/badge/📥%20下载最新APK-Releases-brightgreen?style=for-the-badge" alt="下载APK">
+    <img src="https://img.shields.io/badge/GitHub-下载最新APK-brightgreen?style=for-the-badge&logo=github" alt="GitHub下载">
+  </a>
+
+  <br/>
+
+  <!-- 网盘下载按钮 -->
+  <a href="https://1825385503.share.123865.com/123pan/0EQWjv-MafMd?pwd=1379#">
+    <img src="https://img.shields.io/badge/📥%20网盘下载-123云盘-blue?style=for-the-badge" alt="网盘下载">
   </a>
 </div>
 
 <p style="text-align: center; margin-top: 10px;">
-  前往 <a href="https://github.com/xtt-xt/Nemo-Mobile-Mod-Studio/releases"><strong>Releases 页面</strong></a> 下载已编译好的 APK 文件。
+  前往 <a href="https://github.com/xtt-xt/Nemo-Mobile-Mod-Studio/releases"><strong>Releases 页面</strong></a> 或通过 <strong>123云盘</strong> 下载已编译好的 APK 文件（提取码：1379）。
   <br/>
   <strong>兼容设备：</strong>Android 6.0 (Marshmallow, API 23) 及以上系统，覆盖绝大多数 Android 手机和平板。
 </p>
@@ -101,5 +109,7 @@
 <h2>💬 开发者的话</h2>
 
 <blockquote>
-  <p>制作这个软件其实是因为我的电脑因为不可抗力没了，经过几个月的开发经历，我对开发有了一定理解，而市面上的手机端模组开发应用少之又少于是我决定开发一个类似于电脑端mc store甚至超越他的手机apk</p>
+  <p>因为我没有电脑，世面上的大部分手机模组制作器都是国际版的，被砍了假日创作者模式后几乎全部用不了。</p>
+  <p>于是我制作了这个软件，所有代码都是由AI编写，文件格式都是我使用云电脑在mc store下载过来的</p>
+  <p>由于我也不是很懂开发模组，所以bug什么的都是难免的，如果有想法可以提Issues</p>
 </blockquote>
