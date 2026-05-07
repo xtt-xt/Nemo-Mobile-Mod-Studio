@@ -99,7 +99,7 @@
 
 <h2>📜 开源许可与致谢</h2>
 
-<p>本项目（Nemo Mobile Mod Studio）采用 <a href="LICENSE"><strong>GNU Lesser General Public License v3.0</strong></a> 进行许可。</p>
+<p>本项目（Nemo Mobile Mod Studio）采用 <a href="LICENSE"><strong>GNU General Public License v3.0</strong></a> 进行许可。</p>
 
 <h3>🎨 第三方组件与致谢</h3>
 <p>本项目的界面实现基于 <strong><a href="https://github.com/1503Dev/ore-ui-for-android">ore-ui-for-android</a></strong>，感谢该组件库的作者 <strong><a href="https://github.com/TheChuan1503">TheChuan1503</a></strong> 及所有贡献者的出色工作。</p>
