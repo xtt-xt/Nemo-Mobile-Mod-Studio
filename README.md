@@ -9,7 +9,7 @@
   </p>
 
   <p>
-    <img src="https://img.shields.io/badge/License-LGPL%20v3-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-GPL--3.0-blue.svg" alt="License">
     <img src="https://img.shields.io/badge/Platform-Android-green.svg" alt="Platform">
     <img src="https://img.shields.io/badge/Release-v1.0.0-orange.svg" alt="Release">
   </p>
