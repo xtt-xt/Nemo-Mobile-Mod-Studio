@@ -693,8 +693,42 @@ public class EditorActivity extends Activity {
     }
 
     private void loadFileList(File directory) {
-        currentDir = directory;
-        middleContainer.removeAllViews();
+		currentDir = directory;
+		middleContainer.removeAllViews();
+
+		// 检查是否为脚本文件夹且缺少预设文件，如果是则显示补齐卡片
+		if (currentDir.getName().startsWith("Script_NeteaseMod")) {
+			File initPy = new File(currentDir, "__init__.py");
+			File modMainPy = new File(currentDir, "modMain.py");
+			if (!initPy.exists() || !modMainPy.exists()) {
+				OreCard card = new OreCard(this);
+				card.setPadding(12, 10, 12, 10);
+				LinearLayout cardLayout = new LinearLayout(this);
+				cardLayout.setOrientation(LinearLayout.HORIZONTAL);
+				cardLayout.setGravity(Gravity.CENTER_VERTICAL);
+				ImageView icon = new ImageView(this);
+				icon.setImageResource(android.R.drawable.ic_menu_add);
+				icon.setColorFilter(Color.parseColor("#AAAAAA"));
+				LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(48, 48);
+				iconParams.setMargins(0, 0, 12, 0);
+				icon.setLayoutParams(iconParams);
+				cardLayout.addView(icon);
+				OreTextView text = new OreTextView(this);
+				text.setText("补齐脚本预设 (__init__.py, modMain.py)");
+				text.setTextColor(Color.WHITE);
+				text.setTextSize(13);
+				cardLayout.addView(text);
+				card.addView(cardLayout);
+				card.setOnClickListener(new View.OnClickListener() {
+						@Override
+						public void onClick(View v) {
+							createScriptFiles();
+						}
+					});
+				middleContainer.addView(card);
+				addGap(middleContainer, 8);
+			}
+		}
 
         File[] allFiles = directory.listFiles();
         if (allFiles == null || allFiles.length == 0) {
@@ -910,11 +944,10 @@ public class EditorActivity extends Activity {
     private void openFileInEditor(File file) {
         editorContainer.removeAllViews();
 
-        if (file.getParentFile() != null && file.getParentFile().getName().equals("netease_recipes")
-            && file.getName().toLowerCase().endsWith(".json")) {
-            buildRecipeEditor(file);
-            return;
-        }
+        if (isInRecipesDirectory(file) && file.getName().toLowerCase().endsWith(".json")) {
+			buildRecipeEditor(file);
+			return;
+		}
 
         String lowerName = file.getName().toLowerCase();
         if (lowerName.endsWith(".png") || lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg")) {
@@ -924,6 +957,17 @@ public class EditorActivity extends Activity {
 
         buildCodeEditor(file);
     }
+	
+	private boolean isInRecipesDirectory(File file) {
+		File parent = file.getParentFile();
+		while (parent != null && !parent.equals(projectDir)) {
+			if ("netease_recipes".equals(parent.getName())) {
+				return true;
+			}
+			parent = parent.getParentFile();
+		}
+		return false;
+	}
 
     private void jumpToCategory(String category) {
         File targetDir = null;
@@ -1595,45 +1639,217 @@ public class EditorActivity extends Activity {
     }
 
     private void showNewItemDialog() {
-        OreTextView msg = new OreTextView(this);
-        msg.setText("新建类型");
-        msg.setTextColor(Color.WHITE);
-        msg.setTextSize(14);
+		OreTextView msg = new OreTextView(this);
+		msg.setText("新建类型");
+		msg.setTextColor(Color.WHITE);
+		msg.setTextSize(14);
 
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setGravity(Gravity.CENTER);
-        int pad = (int) (16 * getResources().getDisplayMetrics().density);
-        layout.setPadding(pad, pad, pad, pad);
-        layout.addView(msg);
+		LinearLayout layout = new LinearLayout(this);
+		layout.setOrientation(LinearLayout.VERTICAL);
+		layout.setGravity(Gravity.CENTER);
+		int pad = (int) (16 * getResources().getDisplayMetrics().density);
+		layout.setPadding(pad, pad, pad, pad);
+		layout.addView(msg);
+		addGap(layout, 12);
 
-        OreDialogBuilder builder = new OreDialogBuilder(this);
-        builder.setTitle("新建");
-        builder.setView(layout);
+		// 内容按钮区（可滚动，方便将来添加更多类型）
+		ScrollView scrollContent = new ScrollView(this);
+		LinearLayout buttonContainer = new LinearLayout(this);
+		buttonContainer.setOrientation(LinearLayout.VERTICAL);
+		buttonContainer.setPadding(0, 8, 0, 8);
 
-        builder.setPositiveButton("新建文件", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialog, int which) {
-                    Toast.makeText(EditorActivity.this, "新建文件功能开发中", Toast.LENGTH_SHORT).show();
-                    dialog.dismiss();
-                }
-            });
-        builder.getPositiveButton().setStyleSheet(StyleSheet.STYLE_GREEN);
+		final OreDialogBuilder builder = new OreDialogBuilder(this);
+		builder.setTitle("新建");
+		builder.setView(layout);
 
-        builder.setNegativeButton("新建配方", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialog, int which) {
-                    showNewRecipeDialog();
-                    dialog.dismiss();
-                }
-            });
+		// 持有外层对话框的引用，便于子按钮关闭它
+		final android.app.Dialog[] outerDialog = new android.app.Dialog[1];
 
-        builder.setNeutralButton("取消", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
-            });
+		OreButton btnNewFile = new OreButton(this);
+		btnNewFile.setText("新建文件");
+		btnNewFile.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+		btnNewFile.setOnClickListener(new View.OnClickListener() {
+				@Override
+				public void onClick(View v) {
+					if (outerDialog[0] != null) {
+						outerDialog[0].dismiss();
+					}
+					showNewFileDialog();
+				}
+			});
+		buttonContainer.addView(btnNewFile);
+		addGap(buttonContainer, 8);
 
-        builder.show();
-    }
+		OreButton btnNewRecipe = new OreButton(this);
+		btnNewRecipe.setText("新建配方");
+		btnNewRecipe.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+		btnNewRecipe.setOnClickListener(new View.OnClickListener() {
+				@Override
+				public void onClick(View v) {
+					if (outerDialog[0] != null) {
+						outerDialog[0].dismiss();
+					}
+					showNewRecipeDialog();
+				}
+			});
+		buttonContainer.addView(btnNewRecipe);
+		addGap(buttonContainer, 8);
+
+		OreButton btnNewFolder = new OreButton(this);
+		btnNewFolder.setText("新建文件夹");
+		btnNewFolder.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+		btnNewFolder.setOnClickListener(new View.OnClickListener() {
+				@Override
+				public void onClick(View v) {
+					if (outerDialog[0] != null) {
+						outerDialog[0].dismiss();
+					}
+					showNewFolderDialog();
+				}
+			});
+		buttonContainer.addView(btnNewFolder);
+		
+		// 检查是否需要脚本预设
+		if (needScriptPreset()) {
+			OreButton btnScriptPreset = new OreButton(this);
+			btnScriptPreset.setText("添加脚本预设");
+			btnScriptPreset.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+			btnScriptPreset.setOnClickListener(new View.OnClickListener() {
+					@Override
+					public void onClick(View v) {
+						if (outerDialog[0] != null) {
+							outerDialog[0].dismiss();
+						}
+						addScriptPreset();
+					}
+				});
+			buttonContainer.addView(btnScriptPreset);
+			addGap(buttonContainer, 8);
+		}
+
+		scrollContent.addView(buttonContainer);
+		layout.addView(scrollContent);
+
+		builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+				@Override
+				public void onClick(DialogInterface dialog, int which) {
+					dialog.dismiss();
+				}
+			});
+
+		outerDialog[0] = builder.show(); // 保存外层对话框的引用
+	}
+	
+	private void showNewFolderDialog() {
+		final OreEditText input = new OreEditText(this);
+		input.setHint("输入文件夹名，如 textures");
+		input.setTextSize(14);
+
+		OreDialogBuilder builder = new OreDialogBuilder(this);
+		builder.setTitle("新建文件夹");
+		builder.setView(input);
+
+		builder.setPositiveButton("创建", new DialogInterface.OnClickListener() {
+				@Override
+				public void onClick(DialogInterface dialog, int which) {
+					String name = input.getText().toString().trim();
+					if (name.isEmpty()) {
+						Toast.makeText(EditorActivity.this, "文件夹名不能为空", Toast.LENGTH_SHORT).show();
+						return;
+					}
+					// 禁止包含/ \ : * ? " < > | 等非法字符
+					if (name.contains("/") || name.contains("\\") || name.contains(":") ||
+						name.contains("*") || name.contains("?") || name.contains("\"") ||
+						name.contains("<") || name.contains(">") || name.contains("|")) {
+						Toast.makeText(EditorActivity.this, "文件夹名包含非法字符", Toast.LENGTH_SHORT).show();
+						return;
+					}
+					createNewFolder(name);
+					dialog.dismiss();
+				}
+			});
+		builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+				@Override
+				public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
+			});
+		builder.show();
+	}
+	
+	private void showNewFileDialog() {
+		final OreEditText input = new OreEditText(this);
+		input.setHint("输入文件名，如 my_script.py");
+		input.setTextSize(14);
+
+		OreDialogBuilder builder = new OreDialogBuilder(this);
+		builder.setTitle("新建文件");
+		builder.setView(input);
+
+		builder.setPositiveButton("创建", new DialogInterface.OnClickListener() {
+				@Override
+				public void onClick(DialogInterface dialog, int which) {
+					String name = input.getText().toString().trim();
+					if (name.isEmpty()) {
+						Toast.makeText(EditorActivity.this, "文件名不能为空", Toast.LENGTH_SHORT).show();
+						return;
+					}
+					// 简单的非法字符检查（可根据需要扩充）
+					if (name.contains("/") || name.contains("\\") || name.contains(":") || name.contains("*") ||
+						name.contains("?") || name.contains("\"") || name.contains("<") || name.contains(">") || name.contains("|")) {
+						Toast.makeText(EditorActivity.this, "文件名包含非法字符", Toast.LENGTH_SHORT).show();
+						return;
+					}
+					createNewFile(name);
+					dialog.dismiss();
+				}
+			});
+		builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+				@Override
+				public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
+			});
+		builder.show();
+	}
+	
+	private void createScriptFiles() {
+		if (currentDir == null || !currentDir.getName().startsWith("Script_NeteaseMod")) {
+			Toast.makeText(this, "当前不是脚本文件夹", Toast.LENGTH_SHORT).show();
+			return;
+		}
+		String folderName = currentDir.getName();
+		String suffix = folderName.substring("Script_NeteaseMod".length());
+		File initFile = new File(currentDir, "__init__.py");
+		File modMainFile = new File(currentDir, "modMain.py");
+
+		try {
+			if (!initFile.exists()) initFile.createNewFile();
+			if (!modMainFile.exists()) {
+				String content = "# -*- coding: utf-8 -*-\n\n" +
+					"from mod.common.mod import Mod\n\n\n" +
+					"@Mod.Binding(name=\"Script_NeteaseMod" + suffix + "\", version=\"0.0.1\")\n" +
+					"class Script_NeteaseMod" + suffix + "(object):\n\n" +
+					"    def __init__(self):\n" +
+					"        pass\n\n" +
+					"    @Mod.InitServer()\n" +
+					"    def Script_NeteaseMod" + suffix + "ServerInit(self):\n" +
+					"        pass\n\n" +
+					"    @Mod.DestroyServer()\n" +
+					"    def Script_NeteaseMod" + suffix + "ServerDestroy(self):\n" +
+					"        pass\n\n" +
+					"    @Mod.InitClient()\n" +
+					"    def Script_NeteaseMod" + suffix + "ClientInit(self):\n" +
+					"        pass\n\n" +
+					"    @Mod.DestroyClient()\n" +
+					"    def Script_NeteaseMod" + suffix + "ClientDestroy(self):\n" +
+					"        pass\n";
+				FileWriter fw = new FileWriter(modMainFile);
+				fw.write(content);
+				fw.close();
+			}
+			Toast.makeText(this, "脚本预设创建成功", Toast.LENGTH_SHORT).show();
+			loadFileList(currentDir); // 刷新当前目录
+		} catch (IOException e) {
+			Toast.makeText(this, "创建失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+		}
+	}
 
     private void showNewRecipeDialog() {
         final OreEditText inputName = new OreEditText(this);
@@ -1703,46 +1919,114 @@ public class EditorActivity extends Activity {
         // 显示并保存 Dialog 引用
         dialogRef[0] = builder.show();
     }
+	
+	private void createNewFolder(String name) {
+		if (currentDir == null) {
+			Toast.makeText(this, "当前目录无效", Toast.LENGTH_SHORT).show();
+			return;
+		}
+		File newDir = new File(currentDir, name);
+		if (newDir.exists()) {
+			Toast.makeText(this, "文件夹已存在", Toast.LENGTH_SHORT).show();
+			return;
+		}
+		if (newDir.mkdirs()) {
+			Toast.makeText(this, "文件夹创建成功", Toast.LENGTH_SHORT).show();
+			loadFileList(currentDir);   // 刷新文件列表
+		} else {
+			Toast.makeText(this, "文件夹创建失败", Toast.LENGTH_SHORT).show();
+		}
+	}
+	
+	private void createNewFile(String name) {
+		if (currentDir == null) {
+			Toast.makeText(this, "当前目录无效", Toast.LENGTH_SHORT).show();
+			return;
+		}
+		File newFile = new File(currentDir, name);
+		if (newFile.exists()) {
+			Toast.makeText(this, "文件已存在", Toast.LENGTH_SHORT).show();
+			return;
+		}
+		try {
+			if (newFile.createNewFile()) {
+				Toast.makeText(this, "文件创建成功", Toast.LENGTH_SHORT).show();
+				loadFileList(currentDir);   // 刷新当前目录文件列表
+			} else {
+				Toast.makeText(this, "文件创建失败", Toast.LENGTH_SHORT).show();
+			}
+		} catch (IOException e) {
+			Toast.makeText(this, "创建失败：" + e.getMessage(), Toast.LENGTH_SHORT).show();
+		}
+	}
 
     private void createNewRecipe(String name, String namespace, String recipeType) {
-        File behDir = null;
-        File[] rootFiles = projectDir.listFiles();
-        if (rootFiles != null) {
-            for (File f : rootFiles) {
-                if (f.isDirectory() && f.getName().startsWith("behavior_pack_")) {
-                    behDir = f; break;
-                }
-            }
-        }
-        if (behDir == null) { Toast.makeText(this, "未找到行为包", Toast.LENGTH_SHORT).show(); return; }
-        File recipesDir = new File(behDir, "netease_recipes");
-        if (!recipesDir.exists()) recipesDir.mkdirs();
+		File recipesDir = null;
 
-        String fileName = namespace + "_" + name + ".json";
-        File recipeFile = new File(recipesDir, fileName);
-        if (recipeFile.exists()) { Toast.makeText(this, "配方已存在", Toast.LENGTH_SHORT).show(); return; }
+		// 1. 检查当前目录是否位于配方目录内（netease_recipes 或其子目录）
+		if (currentDir != null) {
+			File dir = currentDir;
+			while (dir != null && !dir.equals(projectDir)) {
+				if (dir.getName().equals("netease_recipes")) {
+					recipesDir = currentDir;   // 就在当前目录创建
+					break;
+				}
+				dir = dir.getParentFile();
+			}
+		}
 
-        String template = "";
-        if (recipeType.equals("recipe_shaped")) {
-            template = "{\n  \"format_version\": \"1.20.10\",\n  \"minecraft:recipe_shaped\": {\n    \"description\": {\"identifier\": \"" + namespace + ":" + name + "\"},\n    \"key\": {},\n    \"pattern\": [],\n    \"result\": {\"count\": 1, \"item\": \"minecraft:apple\"},\n    \"tags\": [\"crafting_table\"],\n    \"unlock\": {\"context\": \"AlwaysUnlocked\"}\n  }\n}";
-        } else if (recipeType.equals("recipe_shapeless")) {
-            template = "{\n  \"format_version\": \"1.20.10\",\n  \"minecraft:recipe_shapeless\": {\n    \"description\": {\"identifier\": \"" + namespace + ":" + name + "\"},\n    \"ingredients\": [],\n    \"result\": {\"count\": 1, \"item\": \"minecraft:apple\"},\n    \"tags\": [\"crafting_table\"],\n    \"unlock\": {\"context\": \"AlwaysUnlocked\"}\n  }\n}";
-        } else if (recipeType.equals("recipe_furnace")) {
-            template = "{\n  \"format_version\": \"1.20.10\",\n  \"minecraft:recipe_furnace\": {\n    \"description\": {\"identifier\": \"" + namespace + ":" + name + "\"},\n    \"input\": {\"count\": 1, \"item\": \"minecraft:apple\"},\n    \"output\": {\"count\": 1, \"item\": \"minecraft:apple\"},\n    \"tags\": [\"furnace\"],\n    \"unlock\": {\"context\": \"AlwaysUnlocked\"}\n  }\n}";
-        } else if (recipeType.equals("recipe_brewing_mix")) {
-            template = "{\n  \"format_version\": \"1.20.10\",\n  \"minecraft:recipe_brewing_mix\": {\n    \"description\": {\"identifier\": \"" + namespace + ":" + name + "\"},\n    \"input\": \"minecraft:potion:4\",\n    \"output\": \"minecraft:potion:31\",\n    \"reagent\": \"minecraft:blaze_powder:0\",\n    \"tags\": [\"brewing_stand\"]\n  }\n}";
-        } else if (recipeType.equals("recipe_smithing_transform")) {
-            template = "{\n  \"format_version\": \"1.20.10\",\n  \"minecraft:recipe_smithing_transform\": {\n    \"description\": {\"identifier\": \"" + namespace + ":" + name + "\"},\n    \"template\": \"minecraft:netherite_upgrade_smithing_template\",\n    \"base\": \"minecraft:diamond_boots\",\n    \"addition\": \"minecraft:netherite_ingot\",\n    \"result\": \"minecraft:netherite_boots\",\n    \"tags\": [\"smithing_table\"]\n  }\n}";
-        }
+		// 2. 不满足上述条件，则使用默认的 behavior_pack/netease_recipes
+		if (recipesDir == null) {
+			File behDir = null;
+			File[] rootFiles = projectDir.listFiles();
+			if (rootFiles != null) {
+				for (File f : rootFiles) {
+					if (f.isDirectory() && f.getName().startsWith("behavior_pack_")) {
+						behDir = f;
+						break;
+					}
+				}
+			}
+			if (behDir == null) {
+				Toast.makeText(this, "未找到行为包", Toast.LENGTH_SHORT).show();
+				return;
+			}
+			recipesDir = new File(behDir, "netease_recipes");
+		}
 
-        try {
-            FileWriter fw = new FileWriter(recipeFile);
-            fw.write(template);
-            fw.close();
-            Toast.makeText(this, "配方创建成功", Toast.LENGTH_SHORT).show();
-            loadFileList(recipesDir);
-        } catch (IOException e) { Toast.makeText(this, "创建失败", Toast.LENGTH_SHORT).show(); }
-    }
+		if (!recipesDir.exists()) recipesDir.mkdirs();
+
+		String fileName = namespace + "_" + name + ".json";
+		File recipeFile = new File(recipesDir, fileName);
+		if (recipeFile.exists()) {
+			Toast.makeText(this, "配方已存在", Toast.LENGTH_SHORT).show();
+			return;
+		}
+
+		// 生成模板 JSON（以下保持原样不变）
+		String template = "";
+		if (recipeType.equals("recipe_shaped")) {
+			template = "{\n  \"format_version\": \"1.20.10\",\n  \"minecraft:recipe_shaped\": {\n    \"description\": {\"identifier\": \"" + namespace + ":" + name + "\"},\n    \"key\": {},\n    \"pattern\": [],\n    \"result\": {\"count\": 1, \"item\": \"minecraft:apple\"},\n    \"tags\": [\"crafting_table\"],\n    \"unlock\": {\"context\": \"AlwaysUnlocked\"}\n  }\n}";
+		} else if (recipeType.equals("recipe_shapeless")) {
+			template = "{\n  \"format_version\": \"1.20.10\",\n  \"minecraft:recipe_shapeless\": {\n    \"description\": {\"identifier\": \"" + namespace + ":" + name + "\"},\n    \"ingredients\": [],\n    \"result\": {\"count\": 1, \"item\": \"minecraft:apple\"},\n    \"tags\": [\"crafting_table\"],\n    \"unlock\": {\"context\": \"AlwaysUnlocked\"}\n  }\n}";
+		} else if (recipeType.equals("recipe_furnace")) {
+			template = "{\n  \"format_version\": \"1.20.10\",\n  \"minecraft:recipe_furnace\": {\n    \"description\": {\"identifier\": \"" + namespace + ":" + name + "\"},\n    \"input\": {\"count\": 1, \"item\": \"minecraft:apple\"},\n    \"output\": {\"count\": 1, \"item\": \"minecraft:apple\"},\n    \"tags\": [\"furnace\"],\n    \"unlock\": {\"context\": \"AlwaysUnlocked\"}\n  }\n}";
+		} else if (recipeType.equals("recipe_brewing_mix")) {
+			template = "{\n  \"format_version\": \"1.20.10\",\n  \"minecraft:recipe_brewing_mix\": {\n    \"description\": {\"identifier\": \"" + namespace + ":" + name + "\"},\n    \"input\": \"minecraft:potion:4\",\n    \"output\": \"minecraft:potion:31\",\n    \"reagent\": \"minecraft:blaze_powder:0\",\n    \"tags\": [\"brewing_stand\"]\n  }\n}";
+		} else if (recipeType.equals("recipe_smithing_transform")) {
+			template = "{\n  \"format_version\": \"1.20.10\",\n  \"minecraft:recipe_smithing_transform\": {\n    \"description\": {\"identifier\": \"" + namespace + ":" + name + "\"},\n    \"template\": \"minecraft:netherite_upgrade_smithing_template\",\n    \"base\": \"minecraft:diamond_boots\",\n    \"addition\": \"minecraft:netherite_ingot\",\n    \"result\": \"minecraft:netherite_boots\",\n    \"tags\": [\"smithing_table\"]\n  }\n}";
+		}
+
+		try {
+			FileWriter fw = new FileWriter(recipeFile);
+			fw.write(template);
+			fw.close();
+			Toast.makeText(this, "配方创建成功", Toast.LENGTH_SHORT).show();
+			loadFileList(recipesDir);
+		} catch (IOException e) {
+			Toast.makeText(this, "创建失败", Toast.LENGTH_SHORT).show();
+		}
+	}
 
     private boolean recipeDirty = false;
 
@@ -2865,5 +3149,131 @@ public class EditorActivity extends Activity {
 			});
 		builder.show();
 	}
+	
+	/**
+	 * 判断当前项目是否需要脚本预设：
+	 * 1. 行为包根目录下没有任何 Script_NeteaseMod* 文件夹 → 需要
+	 * 2. 存在脚本文件夹，但缺少 __init__.py 或 modMain.py → 需要
+	 * 否则不需要。
+	 */
+	private boolean needScriptPreset() {
+		if (projectDir == null) return false;
+		File[] rootFiles = projectDir.listFiles();
+		if (rootFiles == null) return false;
+
+		// 查找行为包
+		File behDir = null;
+		for (File f : rootFiles) {
+			if (f.isDirectory() && (f.getName().startsWith("behavior_pack_") || f.getName().startsWith("behaviour_pack_"))) {
+				behDir = f;
+				break;
+			}
+		}
+		if (behDir == null) return false;   // 连行为包都没有，不需要
+
+		// 查找脚本目录
+		File[] behSubs = behDir.listFiles();
+		if (behSubs == null) return true;   // 行为包是空的，算需要
+		File scriptDir = null;
+		for (File sub : behSubs) {
+			if (sub.isDirectory() && sub.getName().startsWith("Script_NeteaseMod")) {
+				scriptDir = sub;
+				break;
+			}
+		}
+		if (scriptDir == null) return true;   // 没有脚本目录
+
+		// 有脚本目录，检查预置文件
+		File initFile = new File(scriptDir, "__init__.py");
+		File modMainFile = new File(scriptDir, "modMain.py");
+		return !initFile.exists() || !modMainFile.exists();
+	}
+
+	private void addScriptPreset() {
+		// 1. 先定位或创建行为包目录
+		File behDir = null;
+		File[] rootFiles = projectDir.listFiles();
+		if (rootFiles != null) {
+			for (File f : rootFiles) {
+				if (f.isDirectory() && (f.getName().startsWith("behavior_pack_") || f.getName().startsWith("behaviour_pack_"))) {
+					behDir = f;
+					break;
+				}
+			}
+		}
+		if (behDir == null) {
+			Toast.makeText(this, "找不到行为包目录", Toast.LENGTH_SHORT).show();
+			return;
+		}
+
+		// 2. 查找或创建脚本文件夹
+		File scriptDir = null;
+		File[] behSubs = behDir.listFiles();
+		if (behSubs != null) {
+			for (File sub : behSubs) {
+				if (sub.isDirectory() && sub.getName().startsWith("Script_NeteaseMod")) {
+					scriptDir = sub;
+					break;
+				}
+			}
+		}
+		if (scriptDir == null) {
+			// 创建一个脚本文件夹
+			String suffix = randomString(8);
+			scriptDir = new File(behDir, "Script_NeteaseMod" + suffix);
+			if (!scriptDir.mkdirs()) {
+				Toast.makeText(this, "创建脚本文件夹失败", Toast.LENGTH_SHORT).show();
+				return;
+			}
+		}
+
+		// 3. 创建 __init__.py 和 modMain.py
+		File initFile = new File(scriptDir, "__init__.py");
+		File modMainFile = new File(scriptDir, "modMain.py");
+
+		try {
+			if (!initFile.exists()) {
+				initFile.createNewFile();
+			}
+			if (!modMainFile.exists()) {
+				String folderName = scriptDir.getName();
+				String content = "# -*- coding: utf-8 -*-\n\n" +
+					"from mod.common.mod import Mod\n\n\n" +
+					"@Mod.Binding(name=\"" + folderName + "\", version=\"0.0.1\")\n" +
+					"class " + folderName + "(object):\n\n" +
+					"    def __init__(self):\n" +
+					"        pass\n\n" +
+					"    @Mod.InitServer()\n" +
+					"    def " + folderName + "ServerInit(self):\n" +
+					"        pass\n\n" +
+					"    @Mod.DestroyServer()\n" +
+					"    def " + folderName + "ServerDestroy(self):\n" +
+					"        pass\n\n" +
+					"    @Mod.InitClient()\n" +
+					"    def " + folderName + "ClientInit(self):\n" +
+					"        pass\n\n" +
+					"    @Mod.DestroyClient()\n" +
+					"    def " + folderName + "ClientDestroy(self):\n" +
+					"        pass\n";
+				FileWriter fw = new FileWriter(modMainFile);
+				fw.write(content);
+				fw.close();
+			}
+			Toast.makeText(this, "脚本预设创建成功", Toast.LENGTH_SHORT).show();
+		} catch (IOException e) {
+			Toast.makeText(this, "创建失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+		}
+	}
+	
+	private String randomString(int length) {
+		String chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+		StringBuilder sb = new StringBuilder();
+		for (int i = 0; i < length; i++) {
+			sb.append(chars.charAt((int)(Math.random() * chars.length())));
+		}
+		return sb.toString();
+	}
+	
+	//回到底部
 
 }
