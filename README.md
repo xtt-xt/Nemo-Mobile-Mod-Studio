@@ -101,7 +101,7 @@
 <h3> 启动器 </h3>
 
 - [x] 模组导入
-- [ ] 模组导出
+- [x] 模组导出
 - [x] 模组创建
 
   - [x] 清单文件
@@ -134,7 +134,7 @@
 
 <h3> 文件编辑查看 </h3>
 
-- [x] 贴图图片
+- [x] 贴图图片(查看)
 - [x] json文件
 - [x] py脚本
 
@@ -143,9 +143,10 @@
 <p>本项目（Nemo Mobile Mod Studio）采用 <a href="LICENSE"><strong>GNU General Public License v3.0</strong></a> 进行许可。</p>
 
 <h3>🎨 第三方组件与致谢</h3>
-<p>本项目的界面实现基于 <strong><a href="https://github.com/1503Dev/ore-ui-for-android">ore-ui-for-android</a></strong>，感谢该组件库的作者 <strong><a href="https://github.com/TheChuan1503">TheChuan1503</a></strong> 及所有贡献者的出色工作。</p>
+<p>本项目的界面实现基于 <strong><a href="https://github.com/1503Dev/ore-ui-for-android">ore-ui-for-android</a></strong>，的分支<strong><a href="https://github.com/xtt-xt/ore-ui-for-android">ore-ui-for-android</a></strong>，感谢该组件库的原作者 <strong><a href="https://github.com/TheChuan1503">TheChuan1503</a></strong> 及所有贡献者的出色工作。</p>
 <ul>
-  <li><strong>项目地址</strong>：<a href="https://github.com/1503Dev/ore-ui-for-android">https://github.com/1503Dev/ore-ui-for-android</a></li>
+  <li><strong>项目地址(分支)</strong>：<a href="https://github.com/xtt-xt/ore-ui-for-android">https://github.com/xtt-xt/ore-ui-for-android</a></li>
+  <li><strong>项目地址(原项目)</strong>：<a href="https://github.com/1503Dev/ore-ui-for-android">https://github.com/1503Dev/ore-ui-for-android</a></li>
   <li><strong>开源许可证</strong>：<a href="https://github.com/1503Dev/ore-ui-for-android/blob/main/LICENSE">Apache License 2.0</a></li>
 </ul>
 
