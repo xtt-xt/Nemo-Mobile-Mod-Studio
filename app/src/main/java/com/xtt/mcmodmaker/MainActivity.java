@@ -2,6 +2,7 @@ package com.xtt.mcmodmaker;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -17,17 +18,38 @@ import android.provider.Settings;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.ViewParent;
+import android.view.inputmethod.InputMethodManager;
+import android.webkit.DownloadListener;
+import android.webkit.URLUtil;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
+import android.widget.TextView;
 import android.widget.Toast;
-
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.documentfile.provider.DocumentFile;
-
+import dev1503.oreui.StyleSheet;
+import dev1503.oreui.dialog.OreDialogBuilder;
+import dev1503.oreui.widgets.OreAccordion;
+import dev1503.oreui.widgets.OreAlert;
+import dev1503.oreui.widgets.OreButton;
+import dev1503.oreui.widgets.OreCard;
+import dev1503.oreui.widgets.OreEditText;
+import dev1503.oreui.widgets.OreSwitch;
+import dev1503.oreui.widgets.OreTabs;
+import dev1503.oreui.widgets.OreTextView;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
@@ -54,26 +76,7 @@ import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
-
 import org.json.JSONObject;
-
-import dev1503.oreui.StyleSheet;
-import dev1503.oreui.dialog.OreDialogBuilder;
-import dev1503.oreui.widgets.OreAccordion;
-import dev1503.oreui.widgets.OreAlert;
-import dev1503.oreui.widgets.OreButton;
-import dev1503.oreui.widgets.OreCard;
-import dev1503.oreui.widgets.OreEditText;
-import dev1503.oreui.widgets.OreSwitch;
-import dev1503.oreui.widgets.OreTabs;
-import dev1503.oreui.widgets.OreTextView;
-import android.view.inputmethod.InputMethodManager;
-import android.widget.TextView;
-import android.view.KeyEvent;
-import android.content.Context;
-import android.view.KeyEvent;
-import android.view.inputmethod.InputMethodManager;
-import android.widget.TextView;
 
 public class MainActivity extends Activity {
 
@@ -94,6 +97,18 @@ public class MainActivity extends Activity {
 	private static final int REQUEST_EXPORT_PROJECT = 1004;  // 导出项目文件选择
 	private File pendingExportDir; // 临时保存待导出的项目路径
 	private OreEditText searchBox;
+	private LinearLayout mainContainer;        // 根容器
+	private FrameLayout contentFrameLayout;    // 内容切换区
+	private ScrollView scrollView;             // 开发/关于页的滚动容器
+	private LinearLayout managerContainer;     // 管理页容器
+	private WebView managerWebView;
+	private OreButton managerRefreshBtn;
+	private OreButton managerOpenBtn;
+	private ValueCallback<Uri[]> mUploadMessage;
+	private final static int FILECHOOSER_RESULT_CODE = 1005;
+	private ProgressBar downloadProgressBar; // 下载进度条，在管理页面使用
+	private File downloadTargetDir;          // 下载保存目录
+	private OreButton managerDownloadDirBtn;
 
     @Override
 	protected void onCreate(Bundle savedInstanceState) {
@@ -106,29 +121,82 @@ public class MainActivity extends Activity {
 				getWindow().setNavigationBarColor(Color.parseColor("#1A1A1A"));
 			}
 
-			ScrollView scrollView = new ScrollView(this);
-			scrollView.setBackgroundColor(Color.parseColor("#1A1A1A"));
+			// 根容器（垂直排列：标题 → 选项卡 → 内容区）
+			mainContainer = new LinearLayout(this);
+			mainContainer.setOrientation(LinearLayout.VERTICAL);
+			mainContainer.setBackgroundColor(Color.parseColor("#1A1A1A"));
 
-			LinearLayout root = new LinearLayout(this);
-			root.setOrientation(LinearLayout.VERTICAL);
-			root.setPadding(20, 40, 20, 40);
-			// 让根布局抢占焦点，避免输入框自动弹出键盘
-			root.setFocusable(true);
-			root.setFocusableInTouchMode(true);
-			root.requestFocus();
-			scrollView.addView(root);
-
+			// ========== 标题 ==========
 			OreTextView tvTitle = new OreTextView(this);
 			tvTitle.setText("模组制作器");
 			tvTitle.setTextSize(24);
 			tvTitle.setTextColor(Color.WHITE);
-			root.addView(tvTitle);
-			addGap(root, 16);
+			mainContainer.addView(tvTitle);
+			addGap(mainContainer, 16);
 
+			// ========== 选项卡（始终可见）==========
+			final OreTabs tabs = new OreTabs(this);
+			OreButton tabDev = new OreButton(this);
+			tabDev.setText("开发");
+			tabDev.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+			OreButton tabAbout = new OreButton(this);
+			tabAbout.setText("关于");
+			tabAbout.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+			OreButton tabManager = new OreButton(this);
+			tabManager.setText("管理");
+			tabManager.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+			tabs.addButton(tabDev);
+			tabs.addButton(tabAbout);
+			tabs.addButton(tabManager);
+			tabs.setActiveIndex(0);
+			mainContainer.addView(tabs);
+			addGap(mainContainer, 12);
+
+			// ========== 内容切换区 ==========
+			contentFrameLayout = new FrameLayout(this);
+			contentFrameLayout.setBackgroundColor(Color.parseColor("#1A1A1A"));
+			LinearLayout.LayoutParams contentParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f); // 占据剩余高度
+			contentFrameLayout.setLayoutParams(contentParams);
+			mainContainer.addView(contentFrameLayout);
+
+			// ---- 开发/关于页：可滚动视图 ----
+			scrollView = new ScrollView(this);
+			scrollView.setBackgroundColor(Color.parseColor("#1A1A1A"));
+			LinearLayout root = new LinearLayout(this);
+			root.setOrientation(LinearLayout.VERTICAL);
+			root.setPadding(20, 40, 20, 40);
+			root.setFocusable(true);
+			root.setFocusableInTouchMode(true);
+			root.requestFocus();
+			scrollView.addView(root);
+			contentFrameLayout.addView(scrollView);
+
+			// ---- 管理页容器（初始隐藏）----
+			managerContainer = new LinearLayout(this);
+			managerContainer.setOrientation(LinearLayout.VERTICAL);
+			managerContainer.setVisibility(View.GONE);
+			contentFrameLayout.addView(managerContainer, new FrameLayout.LayoutParams(
+										   FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+			// ================= root 内部内容 =================
+			// 进度条
+			importProgressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+			importProgressBar.setMax(100);
+			importProgressBar.setProgress(0);
+			importProgressBar.setVisibility(View.GONE);
+			LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                (int) (6 * getResources().getDisplayMetrics().density));
+			barParams.bottomMargin = (int) (16 * getResources().getDisplayMetrics().density);
+			importProgressBar.setLayoutParams(barParams);
+			importProgressBar.setProgressTintList(ColorStateList.valueOf(Color.WHITE));
+			root.addView(importProgressBar);
+
+			// 搜索框
 			searchBox = new OreEditText(this);
 			searchBox.setHint("搜索模组名称,命名空间或ID...");
 			searchBox.setTextSize(12);
-// 不再限制触摸焦点，用户可正常点击输入
 			searchBox.addTextChangedListener(new TextWatcher() {
 					@Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
 					@Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
@@ -137,59 +205,31 @@ public class MainActivity extends Activity {
 						loadProjects();
 					}
 				});
-// 回车键隐藏键盘并清除焦点
 			searchBox.setOnEditorActionListener(new TextView.OnEditorActionListener() {
-					@Override
-					public boolean onEditorAction(TextView v, int actionId, KeyEvent event) {
+					@Override public boolean onEditorAction(TextView v, int actionId, KeyEvent event) {
 						InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
 						imm.hideSoftInputFromWindow(v.getWindowToken(), 0);
 						v.clearFocus();
 						return true;
 					}
 				});
-
-			importProgressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-			importProgressBar.setMax(100);
-			importProgressBar.setProgress(0);
-			importProgressBar.setVisibility(View.GONE);
-			LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(
-				LinearLayout.LayoutParams.MATCH_PARENT,
-				(int) (6 * getResources().getDisplayMetrics().density));
-			barParams.bottomMargin = (int) (16 * getResources().getDisplayMetrics().density);
-			importProgressBar.setLayoutParams(barParams);
-			importProgressBar.setProgressTintList(ColorStateList.valueOf(Color.WHITE));
-			root.addView(importProgressBar);
-
-			final OreTabs tabs = new OreTabs(this);
-			OreButton tabDev = new OreButton(this);
-			tabDev.setText("开发");
-			tabDev.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-			OreButton tabAbout = new OreButton(this);
-			tabAbout.setText("关于");
-			tabAbout.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-			tabs.addButton(tabDev);
-			tabs.addButton(tabAbout);
-			tabs.setActiveIndex(0);
-			root.addView(tabs);
-			addGap(root, 12);
-
 			root.addView(searchBox);
 			addGap(root, 12);
-			
+
+			// 项目列表、关于容器
 			projectListContainer = new LinearLayout(this);
 			projectListContainer.setOrientation(LinearLayout.VERTICAL);
 			root.addView(projectListContainer);
-
 			aboutContainer = new LinearLayout(this);
 			aboutContainer.setOrientation(LinearLayout.VERTICAL);
 			aboutContainer.setVisibility(View.GONE);
 			root.addView(aboutContainer);
 			showAboutPage();
 
+			// 底部按钮（新建/导入，仅开发页显示）
 			buttonRow = new LinearLayout(this);
 			buttonRow.setOrientation(LinearLayout.HORIZONTAL);
 			buttonRow.setGravity(Gravity.CENTER);
-
 			OreButton btnCreate = new OreButton(this);
 			btnCreate.setText("+ 新建模组");
 			btnCreate.setStyleSheet(StyleSheet.STYLE_GREEN);
@@ -203,7 +243,6 @@ public class MainActivity extends Activity {
 					}
 				});
 			buttonRow.addView(btnCreate);
-
 			OreButton btnImport = new OreButton(this);
 			btnImport.setText("导入模组");
 			btnImport.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
@@ -219,31 +258,26 @@ public class MainActivity extends Activity {
 			buttonRow.addView(btnImport);
 			root.addView(buttonRow);
 
+			// ========== 管理页初始化（WebView）==========
+			setupManagerPage();
+
+			// ========== 选项卡事件 ==========
 			tabDev.setOnClickListener(new View.OnClickListener() {
-					@Override public void onClick(View v) {
-						tabs.setActiveIndex(0);
-						projectListContainer.setVisibility(View.VISIBLE);
-						aboutContainer.setVisibility(View.GONE);
-						buttonRow.setVisibility(View.VISIBLE);
-						if (searchBox != null) searchBox.setVisibility(View.VISIBLE);   // 新增
-					}
+					@Override public void onClick(View v) { tabs.setActiveIndex(0); showTab(0); }
 				});
-
 			tabAbout.setOnClickListener(new View.OnClickListener() {
-					@Override public void onClick(View v) {
-						tabs.setActiveIndex(1);
-						projectListContainer.setVisibility(View.GONE);
-						aboutContainer.setVisibility(View.VISIBLE);
-						buttonRow.setVisibility(View.GONE);
-						if (searchBox != null) searchBox.setVisibility(View.GONE);     // 新增
-					}
+					@Override public void onClick(View v) { tabs.setActiveIndex(1); showTab(1); }
+				});
+			tabManager.setOnClickListener(new View.OnClickListener() {
+					@Override public void onClick(View v) { tabs.setActiveIndex(2); showTab(2); }
 				});
 
-			setContentView(scrollView);
+			setContentView(mainContainer);
 
-			if (checkStoragePermission()) { 
-				cleanTempFolders(); 
-				loadProjects(); 
+			// 权限与首次启动
+			if (checkStoragePermission()) {
+				cleanTempFolders();
+				loadProjects();
 			} else if (prefs.getBoolean("first_run", true)) {
 				showPermissionRequestDialog();
 			}
@@ -323,6 +357,16 @@ public class MainActivity extends Activity {
 				loadProjects();
 			} else {
 				Toast.makeText(this, "需要存储权限才能使用", Toast.LENGTH_LONG).show();
+			}
+			return;
+		}
+
+		// WebView 文件选择器返回
+		if (requestCode == FILECHOOSER_RESULT_CODE) {
+			if (mUploadMessage != null) {
+				Uri result = (data == null || resultCode != RESULT_OK) ? null : data.getData();
+				mUploadMessage.onReceiveValue(result == null ? null : new Uri[]{result});
+				mUploadMessage = null;
 			}
 			return;
 		}
@@ -2136,8 +2180,11 @@ public class MainActivity extends Activity {
 		super.onResume();
 		if (checkStoragePermission()) {
 			loadProjects();
-			// 每天首次打开时自动检查更新（静默，仅在有新版本时弹窗）
-			autoCheckForUpdate();
+			autoCheckForUpdate();   // 原有的自动更新检查
+		}
+		// 新增：恢复 WebView（如果有的话）
+		if (managerWebView != null) {
+			managerWebView.onResume();
 		}
 	}
 	
@@ -2219,6 +2266,294 @@ public class MainActivity extends Activity {
 				}
 			}).start();
 	}
+	
+	private void setupManagerPage() {
+		if (managerWebView != null) return;
+
+		// ---------- 下载进度条（白色） ----------
+		downloadProgressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+		downloadProgressBar.setMax(100);
+		downloadProgressBar.setProgress(0);
+		downloadProgressBar.setVisibility(View.GONE);
+		downloadProgressBar.setProgressTintList(ColorStateList.valueOf(Color.WHITE));
+		managerContainer.addView(downloadProgressBar, new LinearLayout.LayoutParams(
+									 LinearLayout.LayoutParams.MATCH_PARENT,
+									 (int) (6 * getResources().getDisplayMetrics().density)));
+
+		// ---------- WebView ----------
+		managerWebView = new WebView(this);
+		WebSettings settings = managerWebView.getSettings();
+		settings.setJavaScriptEnabled(true);
+		settings.setDomStorageEnabled(true);
+		settings.setUseWideViewPort(true);
+		settings.setLoadWithOverviewMode(true);
+		settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+		settings.setAllowFileAccess(true);
+
+		managerWebView.setWebViewClient(new WebViewClient() {
+				@Override
+				public boolean shouldOverrideUrlLoading(WebView view, String url) {
+					view.loadUrl(url);
+					return true;
+				}
+			});
+
+		// 文件上传支持
+		managerWebView.setWebChromeClient(new WebChromeClient() {
+				@Override
+				public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback,
+												 FileChooserParams fileChooserParams) {
+					mUploadMessage = filePathCallback;
+					Intent intent = fileChooserParams.createIntent();
+					try {
+						startActivityForResult(intent, FILECHOOSER_RESULT_CODE);
+					} catch (Exception e) {
+						mUploadMessage = null;
+						Toast.makeText(MainActivity.this, "无法打开文件选择器", Toast.LENGTH_SHORT).show();
+						return false;
+					}
+					return true;
+				}
+			});
+
+		// 文件下载监听
+		managerWebView.setDownloadListener(new DownloadListener() {
+				@Override
+				public void onDownloadStart(String url, String userAgent, String contentDisposition,
+											String mimeType, long contentLength) {
+					if (!checkStoragePermission()) {
+						Toast.makeText(MainActivity.this, "需要存储权限才能下载", Toast.LENGTH_SHORT).show();
+						return;
+					}
+					String fileName = URLUtil.guessFileName(url, contentDisposition, mimeType);
+					downloadFile(url, fileName);
+				}
+			});
+
+		managerWebView.loadUrl("https://mcdev.webapp.163.com/#/square?channel=cnt");
+		managerContainer.addView(managerWebView, new LinearLayout.LayoutParams(
+									 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+		// ---------- 底部按钮行（三个按钮均匀占满） ----------
+		LinearLayout buttonRow = new LinearLayout(this);
+		buttonRow.setOrientation(LinearLayout.HORIZONTAL);
+		buttonRow.setGravity(Gravity.CENTER);
+		buttonRow.setLayoutParams(new LinearLayout.LayoutParams(
+									  LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+		// 刷新按钮
+		managerRefreshBtn = new OreButton(this);
+		managerRefreshBtn.setText("刷新页面");
+		managerRefreshBtn.setStyleSheet(StyleSheet.STYLE_WHITE);
+		managerRefreshBtn.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+		managerRefreshBtn.setOnClickListener(new View.OnClickListener() {
+				@Override
+				public void onClick(View v) {
+					if (managerWebView != null) managerWebView.reload();
+				}
+			});
+		buttonRow.addView(managerRefreshBtn);
+
+		// 在浏览器打开按钮
+		managerOpenBtn = new OreButton(this);
+		managerOpenBtn.setText("浏览器打开");
+		managerOpenBtn.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+		managerOpenBtn.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+		managerOpenBtn.setOnClickListener(new View.OnClickListener() {
+				@Override
+				public void onClick(View v) {
+					try {
+						Intent intent = new Intent(Intent.ACTION_VIEW,
+												   Uri.parse("https://mcdev.webapp.163.com/#/square?channel=cnt"));
+						startActivity(intent);
+					} catch (Exception e) {
+						Toast.makeText(MainActivity.this, "没有可用的浏览器", Toast.LENGTH_SHORT).show();
+					}
+				}
+			});
+		buttonRow.addView(managerOpenBtn);
+
+		// 打开下载目录按钮
+		managerDownloadDirBtn = new OreButton(this);
+		managerDownloadDirBtn.setText("下载目录");
+		managerDownloadDirBtn.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+		managerDownloadDirBtn.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+		managerDownloadDirBtn.setOnClickListener(new View.OnClickListener() {
+				@Override
+				public void onClick(View v) {
+					openDownloadFolder();
+				}
+			});
+		buttonRow.addView(managerDownloadDirBtn);
+
+		managerContainer.addView(buttonRow);
+
+		// 确保下载目录存在
+		downloadTargetDir = new File(Environment.getExternalStorageDirectory(), "McMod/Download");
+		if (!downloadTargetDir.exists()) downloadTargetDir.mkdirs();
+	}
+	
+	private void showTab(int index) {
+		// 0=开发, 1=关于, 2=管理
+		if (scrollView != null) {
+			scrollView.setVisibility(index == 2 ? View.GONE : View.VISIBLE);
+		}
+		if (projectListContainer != null) {
+			projectListContainer.setVisibility(index == 0 ? View.VISIBLE : View.GONE);
+		}
+		if (aboutContainer != null) {
+			aboutContainer.setVisibility(index == 1 ? View.VISIBLE : View.GONE);
+		}
+		if (managerContainer != null) {
+			managerContainer.setVisibility(index == 2 ? View.VISIBLE : View.GONE);
+		}
+		if (buttonRow != null) {
+			buttonRow.setVisibility(index == 0 ? View.VISIBLE : View.GONE);
+		}
+		if (searchBox != null) {
+			searchBox.setVisibility(index == 0 ? View.VISIBLE : View.GONE);
+		}
+	}
+	
+	@Override
+	protected void onPause() {
+		super.onPause();
+		if (managerWebView != null) managerWebView.onPause();
+	}
+	@Override
+	protected void onDestroy() {
+		if (managerWebView != null) {
+			// 停止加载并清空页面
+			managerWebView.loadUrl("about:blank");
+			managerWebView.clearHistory();
+			// 移除 WebView 避免持有 Activity 引用
+			ViewParent parent = managerWebView.getParent();
+			if (parent instanceof ViewGroup) {
+				((ViewGroup) parent).removeView(managerWebView);
+			}
+			managerWebView.destroy();
+			managerWebView = null;
+		}
+		super.onDestroy();
+	}
+	
+	private void downloadFile(final String url, final String fileName) {
+		runOnUiThread(new Runnable() {
+				@Override public void run() {
+					downloadProgressBar.setProgress(0);
+					downloadProgressBar.setVisibility(View.VISIBLE);
+				}
+			});
+
+		new Thread(new Runnable() {
+				@Override
+				public void run() {
+					HttpURLConnection conn = null;
+					InputStream is = null;
+					FileOutputStream fos = null;
+					File outFile = new File(downloadTargetDir, fileName);
+					try {
+						URL downloadUrl = new URL(url);
+						conn = (HttpURLConnection) downloadUrl.openConnection();
+						conn.setRequestMethod("GET");
+						conn.setConnectTimeout(15000);
+						conn.setReadTimeout(15000);
+						conn.setRequestProperty("User-Agent", "NemoModStudio");
+						conn.connect();
+
+						// 检查响应头，如果是 JSON 类型且长度较小，可能为错误消息
+						String contentType = conn.getContentType();
+						int totalSize = conn.getContentLength();
+						is = conn.getInputStream();
+
+						fos = new FileOutputStream(outFile);
+						byte[] buffer = new byte[8192];
+						int len, downloaded = 0;
+						while ((len = is.read(buffer)) != -1) {
+							fos.write(buffer, 0, len);
+							downloaded += len;
+							if (totalSize > 0) {
+								final int progress = (int) (downloaded * 100L / totalSize);
+								runOnUiThread(new Runnable() {
+										@Override public void run() { downloadProgressBar.setProgress(progress); }
+									});
+							}
+						}
+						fos.flush();
+
+						// 检查文件是否为“未登录”错误 JSON
+						if (isJsonErrorFile(outFile)) {
+							outFile.delete();  // 删除错误文件
+							showToast("下载错误，需要打开浏览器下载");
+						} else {
+							showToast("下载完成：" + outFile.getAbsolutePath());
+						}
+					} catch (final Exception e) {
+						showToast("下载失败：" + e.getMessage());
+						LogUtil.logException(e);
+						if (outFile.exists()) outFile.delete();
+					} finally {
+						try { if (is != null) is.close(); } catch (Exception e) {}
+						try { if (fos != null) fos.close(); } catch (Exception e) {}
+						if (conn != null) conn.disconnect();
+						runOnUiThread(new Runnable() {
+								@Override public void run() { downloadProgressBar.setVisibility(View.GONE); }
+							});
+					}
+				}
+			}).start();
+	}
+
+	/**
+	 * 判断下载文件是否为包含 "status":"no_login" 的 JSON 错误
+	 */
+	private boolean isJsonErrorFile(File file) {
+		try {
+			// 只读取前 1024 字节就足够判断了
+			byte[] buffer = new byte[Math.min((int) file.length(), 1024)];
+			FileInputStream fis = new FileInputStream(file);
+			fis.read(buffer);
+			fis.close();
+			String content = new String(buffer, "UTF-8").trim();
+			if (content.startsWith("{") && content.contains("\"status\"")) {
+				JSONObject json = new JSONObject(content);
+				return "no_login".equals(json.optString("status"));
+			}
+		} catch (Exception ignored) {}
+		return false;
+	}
+	
+	private void openDownloadFolder() {
+		try {
+			Uri uri;
+			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+				uri = androidx.core.content.FileProvider.getUriForFile(
+                    this, getPackageName() + ".fileprovider", downloadTargetDir);
+			} else {
+				uri = Uri.fromFile(downloadTargetDir);
+			}
+			Intent intent = new Intent(Intent.ACTION_VIEW);
+			intent.setDataAndType(uri, "application/x-directory");
+			intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+			startActivity(intent);
+		} catch (Exception e) {
+			try {
+				Uri uri;
+				if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+					uri = androidx.core.content.FileProvider.getUriForFile(
+                        this, getPackageName() + ".fileprovider", downloadTargetDir);
+				} else {
+					uri = Uri.fromFile(downloadTargetDir);
+				}
+				Intent intent = new Intent(Intent.ACTION_VIEW);
+				intent.setDataAndType(uri, "resource/folder");
+				intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+				startActivity(intent);
+			} catch (Exception e2) {
+				Toast.makeText(this, "无法打开文件夹", Toast.LENGTH_SHORT).show();
+			}
+		}
+	}
 
     // ======================== 工具方法 ========================
     private void writeStringToFile(File file, String content) {
@@ -2234,6 +2569,7 @@ public class MainActivity extends Activity {
 
     private interface ImportConflictCallback { void onChoice(int choice); }
     private interface NameInputCallback { void onName(String name); }
+	//回到底部
 }
 
 
