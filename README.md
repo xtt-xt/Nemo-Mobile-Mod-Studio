@@ -6,6 +6,7 @@
 
   <p style="font-size: 1.2em; color: #7f8c8d;">
     网易模组制作器 · 移动端的Minecraft模组创作工具
+目前属于非常不完善阶段，谨慎使用
   </p>
 
   <p>
