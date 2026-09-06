@@ -8,20 +8,54 @@ android {
         applicationId "com.xtt.mcmodmaker"
         minSdkVersion 23
         targetSdkVersion 26
-        versionCode 3
-        versionName "1.0.2"
+        versionCode 4
+        versionName "1.1.0"
     }
+
+    signingConfigs {
+        release {
+            // 仅 CI 注入签名信息；密钥库和密码绝不进入仓库。
+            def keyStorePath = System.getenv("NEMO_KEYSTORE_FILE")
+            if (keyStorePath != null && !keyStorePath.trim().isEmpty()) {
+                storeFile file(keyStorePath)
+                storePassword System.getenv("NEMO_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("NEMO_KEY_ALIAS")
+                keyPassword System.getenv("NEMO_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            // 没有 CI 发布密钥时不允许悄悄使用 debug 签名构建 release。
+            if (System.getenv("NEMO_KEYSTORE_FILE") != null) {
+                signingConfig signingConfigs.release
+            }
         }
     }
+
+    // 兼容 Java 8 语法（lambda 等）
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
 }
+
+// 移除实验性 aapt2 覆盖，使用默认 aapt2
+// android.aapt2FromMavenOverride = null
+
 
 dependencies {
     implementation files('libs/ore-ui.jar')
     implementation 'androidx.appcompat:appcompat:1.0.0'
-    // 关键！添加 Kotlin 标准库，否则会找不到 Kotlin 类
-    implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.6.0'
+    // 权限相关（ActivityCompat / ContextCompat）
+    implementation 'androidx.core:core:1.6.0'
+    // SAF 树目录访问（DocumentFile）
+    implementation 'androidx.documentfile:documentfile:1.0.1'
+    // Kotlin 标准库（ore-ui 依赖 Kotlin 类）
+    implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.8.0'
+    // sora-editor 开源代码编辑器
+    implementation 'io.github.Rosemoe.sora-editor:editor:0.20.4'
 }

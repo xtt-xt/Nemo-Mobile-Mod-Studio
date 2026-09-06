@@ -2,6 +2,9 @@
 *.aab
 *.keystore
 *.jks
+*.p12
+*.pem
+.backups/
 app/build/
 build/
 .gradle/

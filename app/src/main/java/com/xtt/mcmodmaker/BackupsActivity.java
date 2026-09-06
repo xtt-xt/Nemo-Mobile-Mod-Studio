@@ -7,7 +7,6 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.Gravity;
@@ -17,15 +16,16 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Toast;
 
+import com.xtt.mcmodmaker.core.Constants;
+import com.xtt.mcmodmaker.core.ProjectManager;
+import com.xtt.mcmodmaker.util.DateUtils;
+import com.xtt.mcmodmaker.util.FileUtils;
+import com.xtt.mcmodmaker.util.JsonUtils;
+import com.xtt.mcmodmaker.util.UiUtils;
+
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.List;
-import java.util.Locale;
 
 import dev1503.oreui.StyleSheet;
 import dev1503.oreui.dialog.OreDialogBuilder;
@@ -34,9 +34,13 @@ import dev1503.oreui.widgets.OreCard;
 import dev1503.oreui.widgets.OreEditText;
 import dev1503.oreui.widgets.OreTextView;
 
+/**
+ * 备份管理：按原版交互结构实现（入口携带 original_id，仅展示单个项目的备份点列表）。
+ * 重构版：复用 {@link ProjectManager} / {@link FileUtils} / {@link JsonUtils} / {@link DateUtils} / {@link UiUtils}，
+ * 移除手工 JSON 解析与重复的文件工具方法。
+ */
 public class BackupsActivity extends Activity {
 
-    private static final String MOD_FOLDER_PATH = "/storage/emulated/0/McMod";
     private String originalId;
     private LinearLayout backupListContainer;
     private List<File> allBackups;
@@ -65,58 +69,7 @@ public class BackupsActivity extends Activity {
         scrollView.addView(root);
 
         // 获取模组显示名称
-        String displayName = originalId;
-        File originalProject = new File(MOD_FOLDER_PATH, originalId);
-        if (!originalProject.exists()) {
-            File backupContainer = new File(MOD_FOLDER_PATH, originalId + "_back");
-            File[] firstBackup = backupContainer.listFiles();
-            if (firstBackup != null && firstBackup.length > 0) {
-                File nameSource = firstBackup[0];
-                if (nameSource.isDirectory()) {
-                    File studioFile = new File(nameSource, "studio.json");
-                    if (studioFile.exists()) {
-                        try {
-                            FileInputStream fis = new FileInputStream(studioFile);
-                            byte[] data = new byte[(int) studioFile.length()];
-                            fis.read(data);
-                            fis.close();
-                            String content = new String(data, "UTF-8");
-                            int start = content.indexOf("\"name\"");
-                            if (start != -1) {
-                                start = content.indexOf("\"", start + 6);
-                                if (start != -1) {
-                                    int end = content.indexOf("\"", start + 1);
-                                    if (end != -1) {
-                                        displayName = content.substring(start + 1, end);
-                                    }
-                                }
-                            }
-                        } catch (Exception ignored) {}
-                    }
-                }
-            }
-        } else {
-            File studioFile = new File(originalProject, "studio.json");
-            if (studioFile.exists()) {
-                try {
-                    FileInputStream fis = new FileInputStream(studioFile);
-                    byte[] data = new byte[(int) studioFile.length()];
-                    fis.read(data);
-                    fis.close();
-                    String content = new String(data, "UTF-8");
-                    int start = content.indexOf("\"name\"");
-                    if (start != -1) {
-                        start = content.indexOf("\"", start + 6);
-                        if (start != -1) {
-                            int end = content.indexOf("\"", start + 1);
-                            if (end != -1) {
-                                displayName = content.substring(start + 1, end);
-                            }
-                        }
-                    }
-                } catch (Exception ignored) {}
-            }
-        }
+        String displayName = resolveDisplayName(originalId);
 
         // 标题
         OreTextView title = new OreTextView(this);
@@ -124,35 +77,32 @@ public class BackupsActivity extends Activity {
         title.setTextColor(Color.WHITE);
         title.setTextSize(18);
         root.addView(title);
-        addGap(root, 16);
+        UiUtils.addGap(this, root, 16);
 
         // 搜索框
         final OreEditText searchBox = new OreEditText(this);
         searchBox.setHint("搜索备份时间...");
         searchBox.setTextSize(12);
         searchBox.addTextChangedListener(new TextWatcher() {
-                @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
-                @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
-                @Override public void afterTextChanged(Editable s) {
-                    searchQuery = s.toString().trim().toLowerCase();
-                    refreshBackupList();
-                }
-            });
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(Editable s) {
+                searchQuery = s.toString().trim().toLowerCase();
+                refreshBackupList();
+            }
+        });
         root.addView(searchBox);
-        addGap(root, 12);
+        UiUtils.addGap(this, root, 12);
 
         // 返回按钮
         OreButton btnBack = new OreButton(this);
-        btnBack.setText("← 返回主页");
+        btnBack.setText("返回主页");
         btnBack.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
         btnBack.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    finish();
-                }
-            });
+            @Override public void onClick(View v) { finish(); }
+        });
         root.addView(btnBack);
-        addGap(root, 12);
+        UiUtils.addGap(this, root, 12);
 
         // 备份列表容器
         backupListContainer = new LinearLayout(this);
@@ -164,9 +114,27 @@ public class BackupsActivity extends Activity {
         loadAllBackups();
     }
 
+    /** 解析项目显示名称：优先原项目 studio.json，其次备份点内的 studio.json，最后回退目录名。 */
+    private String resolveDisplayName(String id) {
+        File originalProject = new File(Constants.PROJECTS_DIR, id);
+        String name = JsonUtils.getProjectName(originalProject);
+        if (!name.equals(originalProject.getName())) return name;
+
+        File backupContainer = new File(Constants.PROJECTS_DIR, id + "_back");
+        File[] firstBackup = backupContainer.listFiles();
+        if (firstBackup != null && firstBackup.length > 0) {
+            File first = firstBackup[0];
+            if (first.isDirectory()) {
+                name = JsonUtils.getProjectName(first);
+                if (!name.equals(first.getName())) return name;
+            }
+        }
+        return id;
+    }
+
     private void loadAllBackups() {
         allBackups = new ArrayList<>();
-        File backupContainer = new File(MOD_FOLDER_PATH, originalId + "_back");
+        File backupContainer = new File(Constants.PROJECTS_DIR, originalId + "_back");
         if (backupContainer.exists() && backupContainer.isDirectory()) {
             File[] subDirs = backupContainer.listFiles();
             if (subDirs != null) {
@@ -193,13 +161,7 @@ public class BackupsActivity extends Activity {
         boolean hasResults = false;
         for (File backupDir : allBackups) {
             String folderName = backupDir.getName();
-            String backupTime = "";
-            try {
-                long timestamp = Long.parseLong(folderName) * 1000L;
-                backupTime = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(new Date(timestamp));
-            } catch (Exception ignored) {
-                backupTime = folderName;
-            }
+            String backupTime = formatBackupTime(folderName);
 
             if (!searchQuery.isEmpty()) {
                 if (!backupTime.toLowerCase().contains(searchQuery) && !folderName.contains(searchQuery)) {
@@ -210,7 +172,7 @@ public class BackupsActivity extends Activity {
             hasResults = true;
             OreCard card = createBackupCard(backupDir, backupTime);
             backupListContainer.addView(card);
-            addGap(backupListContainer, 8);
+            UiUtils.addGap(this, backupListContainer, 8);
         }
 
         if (!hasResults) {
@@ -228,6 +190,8 @@ public class BackupsActivity extends Activity {
         LinearLayout cardLayout = new LinearLayout(this);
         cardLayout.setOrientation(LinearLayout.HORIZONTAL);
         cardLayout.setGravity(Gravity.CENTER_VERTICAL);
+        cardLayout.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         ImageView icon = new ImageView(this);
         icon.setImageResource(android.R.drawable.ic_menu_save);
@@ -241,25 +205,9 @@ public class BackupsActivity extends Activity {
         textLayout.setOrientation(LinearLayout.VERTICAL);
 
         String displayName = backupTime;
-        File studioFile = new File(backupDir, "studio.json");
-        if (studioFile.exists()) {
-            try {
-                FileInputStream fis = new FileInputStream(studioFile);
-                byte[] data = new byte[(int) studioFile.length()];
-                fis.read(data);
-                fis.close();
-                String content = new String(data, "UTF-8");
-                int start = content.indexOf("\"name\"");
-                if (start != -1) {
-                    start = content.indexOf("\"", start + 6);
-                    if (start != -1) {
-                        int end = content.indexOf("\"", start + 1);
-                        if (end != -1) {
-                            displayName = content.substring(start + 1, end) + " (副本)";
-                        }
-                    }
-                }
-            } catch (Exception ignored) {}
+        String backupName = JsonUtils.getProjectName(backupDir);
+        if (!backupName.equals(backupDir.getName())) {
+            displayName = backupName + " (副本)";
         }
 
         OreTextView nameText = new OreTextView(this);
@@ -278,11 +226,10 @@ public class BackupsActivity extends Activity {
         card.addView(cardLayout);
 
         card.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    showBackupMenu(backupDir);
-                }
-            });
+            @Override public void onClick(View v) {
+                showBackupMenu(backupDir);
+            }
+        });
 
         return card;
     }
@@ -305,62 +252,34 @@ public class BackupsActivity extends Activity {
         builder.setView(msgLayout);
 
         builder.setPositiveButton("覆盖", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialog, int which) {
-                    overwriteOriginal(backupDir);
-                    dialog.dismiss();
-                }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) {
+                overwriteOriginal(backupDir);
+                dialog.dismiss();
+            }
+        });
         builder.getPositiveButton().setStyleSheet(StyleSheet.STYLE_RED);
 
         builder.setNegativeButton("设置", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialog, int which) {
-                    showCopySettings(backupDir);
-                }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) {
+                showCopySettings(backupDir);
+            }
+        });
         builder.getNegativeButton().setStyleSheet(StyleSheet.STYLE_WHITE);
 
         builder.setNeutralButton("取消", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialog, int which) {
-                    dialog.dismiss();
-                }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) {
+                dialog.dismiss();
+            }
+        });
 
         builder.show();
     }
 
     private void showCopySettings(final File backupDir) {
-        String backupName = backupDir.getName();
-        String backupTime = "";
-        try {
-            long timestamp = Long.parseLong(backupName) * 1000L;
-            backupTime = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(new Date(timestamp));
-        } catch (Exception ignored) {
-            backupTime = backupName;
-        }
-
-        String displayName = backupTime;
-        File studioFile = new File(backupDir, "studio.json");
-        if (studioFile.exists()) {
-            try {
-                FileInputStream fis = new FileInputStream(studioFile);
-                byte[] data = new byte[(int) studioFile.length()];
-                fis.read(data);
-                fis.close();
-                String content = new String(data, "UTF-8");
-                int start = content.indexOf("\"name\"");
-                if (start != -1) {
-                    start = content.indexOf("\"", start + 6);
-                    if (start != -1) {
-                        int end = content.indexOf("\"", start + 1);
-                        if (end != -1) {
-                            displayName = content.substring(start + 1, end);
-                        }
-                    }
-                }
-            } catch (Exception ignored) {}
+        String backupTime = formatBackupTime(backupDir.getName());
+        String displayName = JsonUtils.getProjectName(backupDir);
+        if (displayName.equals(backupDir.getName())) {
+            displayName = backupTime;
         }
 
         LinearLayout contentLayout = new LinearLayout(this);
@@ -374,7 +293,7 @@ public class BackupsActivity extends Activity {
         nameText.setTextColor(Color.WHITE);
         nameText.setTextSize(14);
         contentLayout.addView(nameText);
-        addGap(contentLayout, 8);
+        UiUtils.addGap(this, contentLayout, 8);
 
         OreTextView timeText = new OreTextView(this);
         timeText.setText("备份时间: " + backupTime);
@@ -387,28 +306,25 @@ public class BackupsActivity extends Activity {
         builder.setView(contentLayout);
 
         builder.setPositiveButton("打开文件夹", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialog, int which) {
-                    openProjectFolder(backupDir);
-                    dialog.dismiss();
-                }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) {
+                openProjectFolder(backupDir);
+                dialog.dismiss();
+            }
+        });
         builder.getPositiveButton().setStyleSheet(StyleSheet.STYLE_GREEN);
 
         builder.setNegativeButton("删除", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialog, int which) {
-                    showDeleteConfirm(backupDir);
-                }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) {
+                showDeleteConfirm(backupDir);
+            }
+        });
         builder.getNegativeButton().setStyleSheet(StyleSheet.STYLE_RED);
 
         builder.setNeutralButton("取消", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialog, int which) {
-                    dialog.dismiss();
-                }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) {
+                dialog.dismiss();
+            }
+        });
 
         builder.show();
     }
@@ -430,74 +346,39 @@ public class BackupsActivity extends Activity {
         builder.setTitle("确认删除");
         builder.setView(msgLayout);
         builder.setPositiveButton("删除", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialog, int which) {
-                    if (deleteRecursive(projectDir)) {
-                        Toast.makeText(BackupsActivity.this, "已删除", Toast.LENGTH_SHORT).show();
-                        loadAllBackups();
-                    } else {
-                        Toast.makeText(BackupsActivity.this, "删除失败", Toast.LENGTH_SHORT).show();
-                    }
-                    dialog.dismiss();
+            @Override public void onClick(DialogInterface dialog, int which) {
+                if (FileUtils.deleteRecursive(projectDir)) {
+                    Toast.makeText(BackupsActivity.this, "已删除", Toast.LENGTH_SHORT).show();
+                    loadAllBackups();
+                } else {
+                    Toast.makeText(BackupsActivity.this, "删除失败", Toast.LENGTH_SHORT).show();
                 }
-            });
+                dialog.dismiss();
+            }
+        });
         builder.getPositiveButton().setStyleSheet(StyleSheet.STYLE_RED);
         builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
+        });
         builder.show();
     }
 
+    /** 用备份覆盖原项目，成功后返回主界面。 */
     private void overwriteOriginal(File backupSubDir) {
-        File parentDir = backupSubDir.getParentFile();
-        String containerName = parentDir.getName();
-        if (!containerName.endsWith("_back")) {
-            Toast.makeText(this, "无法识别原项目ID", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        String origId = containerName.substring(0, containerName.length() - 5);
-        File originalDir = new File(MOD_FOLDER_PATH, origId);
-
-        if (originalDir.exists()) {
-            deleteRecursive(originalDir);
-        }
-
-        try {
-            copyDirectory(backupSubDir, originalDir);
-            Toast.makeText(this, "覆盖成功", Toast.LENGTH_SHORT).show();
+        ProjectManager pm = new ProjectManager(this);
+        if (pm.overwriteOriginalFromBackup(backupSubDir)) {
             setResult(RESULT_OK);
             finish();
-        } catch (IOException e) {
-            Toast.makeText(this, "覆盖失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
         }
     }
 
     private void openProjectFolder(File folder) {
         try {
-            Uri uri;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                uri = androidx.core.content.FileProvider.getUriForFile(
-                    this, "com.xtt.mcmodmaker.fileprovider", folder);
-            } else {
-                uri = Uri.fromFile(folder);
-            }
-            Intent intent = new Intent(Intent.ACTION_VIEW);
-            intent.setDataAndType(uri, "application/x-directory");
-            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            Intent intent = buildFolderIntent(folder, "application/x-directory");
             startActivity(intent);
         } catch (Exception e) {
             try {
-                Uri uri;
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    uri = androidx.core.content.FileProvider.getUriForFile(
-                        this, "com.xtt.mcmodmaker.fileprovider", folder);
-                } else {
-                    uri = Uri.fromFile(folder);
-                }
-                Intent intent = new Intent(Intent.ACTION_VIEW);
-                intent.setDataAndType(uri, "resource/folder");
-                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                Intent intent = buildFolderIntent(folder, "resource/folder");
                 startActivity(intent);
             } catch (Exception e2) {
                 Toast.makeText(this, "无法打开文件夹", Toast.LENGTH_SHORT).show();
@@ -505,45 +386,26 @@ public class BackupsActivity extends Activity {
         }
     }
 
-    private boolean deleteRecursive(File file) {
-        if (file.isDirectory()) {
-            File[] children = file.listFiles();
-            if (children != null) {
-                for (File child : children) {
-                    deleteRecursive(child);
-                }
-            }
-        }
-        return file.delete();
-    }
-
-    private void copyDirectory(File source, File dest) throws IOException {
-        if (source.isDirectory()) {
-            dest.mkdirs();
-            File[] children = source.listFiles();
-            if (children != null) {
-                for (File child : children) {
-                    copyDirectory(child, new File(dest, child.getName()));
-                }
-            }
+    private Intent buildFolderIntent(File folder, String mimeType) {
+        Uri uri;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            uri = androidx.core.content.FileProvider.getUriForFile(
+                    this, Constants.FILE_PROVIDER_AUTHORITY, folder);
         } else {
-            FileInputStream fis = new FileInputStream(source);
-            FileOutputStream fos = new FileOutputStream(dest);
-            byte[] buffer = new byte[8192];
-            int len;
-            while ((len = fis.read(buffer)) != -1) {
-                fos.write(buffer, 0, len);
-            }
-            fis.close();
-            fos.close();
+            uri = Uri.fromFile(folder);
+        }
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        intent.setDataAndType(uri, mimeType);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        return intent;
+    }
+
+    /** 格式化备份点时间戳（秒级），解析失败时原样返回。 */
+    private String formatBackupTime(String timestamp) {
+        try {
+            return DateUtils.formatSeconds(Long.parseLong(timestamp));
+        } catch (NumberFormatException e) {
+            return timestamp;
         }
     }
-
-    private void addGap(LinearLayout parent, int h) {
-        View v = new View(this);
-        v.setLayoutParams(new LinearLayout.LayoutParams(
-                              LinearLayout.LayoutParams.MATCH_PARENT, h));
-        parent.addView(v);
-    }
-
 }

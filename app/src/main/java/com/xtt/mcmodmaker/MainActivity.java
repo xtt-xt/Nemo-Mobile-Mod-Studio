@@ -5,11 +5,11 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -20,16 +20,7 @@ import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
-import android.view.ViewGroup;
-import android.view.ViewParent;
 import android.view.inputmethod.InputMethodManager;
-import android.webkit.DownloadListener;
-import android.webkit.URLUtil;
-import android.webkit.ValueCallback;
-import android.webkit.WebChromeClient;
-import android.webkit.WebSettings;
-import android.webkit.WebView;
-import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -37,9 +28,32 @@ import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.documentfile.provider.DocumentFile;
+
+import com.xtt.mcmodmaker.net.McDevApi;
+import com.xtt.mcmodmaker.core.Constants;
+import com.xtt.mcmodmaker.core.ProjectManager;
+import com.xtt.mcmodmaker.core.UpdateChecker;
+import com.xtt.mcmodmaker.util.DateUtils;
+import com.xtt.mcmodmaker.util.FileUtils;
+import com.xtt.mcmodmaker.util.SettingsManager;
+import com.xtt.mcmodmaker.util.UiUtils;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.File;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
 import dev1503.oreui.StyleSheet;
 import dev1503.oreui.dialog.OreDialogBuilder;
 import dev1503.oreui.widgets.OreAccordion;
@@ -50,732 +64,563 @@ import dev1503.oreui.widgets.OreEditText;
 import dev1503.oreui.widgets.OreSwitch;
 import dev1503.oreui.widgets.OreTabs;
 import dev1503.oreui.widgets.OreTextView;
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
-import java.util.UUID;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
-import java.util.zip.ZipOutputStream;
-import org.json.JSONObject;
 
+/**
+ * 主界面：三选项卡（开发/关于/管理）。
+ * 重构版：项目业务委托 {@link ProjectManager}，通用逻辑复用 util 包，消除重复代码。
+ */
 public class MainActivity extends Activity {
 
-    private static final String MOD_FOLDER_PATH = "/storage/emulated/0/McMod";
     private static final int REQUEST_MANAGE_STORAGE = 1001;
     private static final int REQUEST_IMPORT_FOLDER = 1002;
     private static final int REQUEST_IMPORT_ZIP = 1003;
+    private static final int REQUEST_EXPORT_PROJECT = 1004;
+    private static final int REQUEST_STORAGE_PERMISSION = 1006;
 
     private LinearLayout projectListContainer;
     private LinearLayout aboutContainer;
     private LinearLayout buttonRow;
-    private SharedPreferences prefs;
+    private FrameLayout contentFrameLayout;
+    private ScrollView scrollView;
+    private LinearLayout managerContainer;
     private ProgressBar importProgressBar;
+    private OreEditText searchBox;
+    private ProgressBar downloadProgressBar;
+    private File downloadTargetDir;
+    private OreAlert storagePermissionAlert;
+    private OreCard storagePermissionCard;
+
+    private SettingsManager settings;
+    private ProjectManager projectManager;
     private String searchQuery = "";
-	private static final String PREFS_LAST_CHECK_DATE = "last_update_check_date";
-	private static final String PREFS_UPDATE_DIALOG_SHOWN_TODAY = "update_dialog_shown_today";
-	private static final String UPDATE_PAN_URL = "https://1825385503.share.123865.com/123pan/0EQWjv-MafMd?pwd=1379";
-	private static final int REQUEST_EXPORT_PROJECT = 1004;  // 导出项目文件选择
-	private File pendingExportDir; // 临时保存待导出的项目路径
-	private OreEditText searchBox;
-	private LinearLayout mainContainer;        // 根容器
-	private FrameLayout contentFrameLayout;    // 内容切换区
-	private ScrollView scrollView;             // 开发/关于页的滚动容器
-	private LinearLayout managerContainer;     // 管理页容器
-	private WebView managerWebView;
-	private OreButton managerRefreshBtn;
-	private OreButton managerOpenBtn;
-	private ValueCallback<Uri[]> mUploadMessage;
-	private final static int FILECHOOSER_RESULT_CODE = 1005;
-	private ProgressBar downloadProgressBar; // 下载进度条，在管理页面使用
-	private File downloadTargetDir;          // 下载保存目录
-	private OreButton managerDownloadDirBtn;
+    private File pendingExportDir;
+
+    // ==================== 生命周期 ====================
 
     @Override
-	protected void onCreate(Bundle savedInstanceState) {
-		super.onCreate(savedInstanceState);
-		try {
-			prefs = getSharedPreferences("mcmod_prefs", MODE_PRIVATE);
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        settings = SettingsManager.getInstance(this);
+        projectManager = new ProjectManager(this);
+        projectManager.setImportUi(new ImportUiImpl());
 
-			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-				getWindow().setStatusBarColor(Color.parseColor("#1A1A1A"));
-				getWindow().setNavigationBarColor(Color.parseColor("#1A1A1A"));
-			}
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            getWindow().setStatusBarColor(Color.parseColor("#1A1A1A"));
+            getWindow().setNavigationBarColor(Color.parseColor("#1A1A1A"));
+        }
 
-			// 根容器（垂直排列：标题 → 选项卡 → 内容区）
-			mainContainer = new LinearLayout(this);
-			mainContainer.setOrientation(LinearLayout.VERTICAL);
-			mainContainer.setBackgroundColor(Color.parseColor("#1A1A1A"));
+        buildUi();
+        setupManagerPage();
+        showTab(0);
+        showStoragePermissionUiIfNeeded();
+    }
 
-			// ========== 标题 ==========
-			OreTextView tvTitle = new OreTextView(this);
-			tvTitle.setText("模组制作器");
-			tvTitle.setTextSize(24);
-			tvTitle.setTextColor(Color.WHITE);
-			mainContainer.addView(tvTitle);
-			addGap(mainContainer, 16);
+    private void buildUi() {
+        LinearLayout mainContainer = new LinearLayout(this);
+        mainContainer.setOrientation(LinearLayout.VERTICAL);
+        mainContainer.setBackgroundColor(Color.parseColor("#1A1A1A"));
 
-			// ========== 选项卡（始终可见）==========
-			final OreTabs tabs = new OreTabs(this);
-			OreButton tabDev = new OreButton(this);
-			tabDev.setText("开发");
-			tabDev.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-			OreButton tabAbout = new OreButton(this);
-			tabAbout.setText("关于");
-			tabAbout.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-			OreButton tabManager = new OreButton(this);
-			tabManager.setText("管理");
-			tabManager.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-			tabs.addButton(tabDev);
-			tabs.addButton(tabAbout);
-			tabs.addButton(tabManager);
-			tabs.setActiveIndex(0);
-			mainContainer.addView(tabs);
-			addGap(mainContainer, 12);
+        // ===== 标题 =====
+        OreTextView tvTitle = new OreTextView(this);
+        tvTitle.setText("模组制作器");
+        tvTitle.setTextSize(24);
+        tvTitle.setTextColor(Color.WHITE);
+        mainContainer.addView(tvTitle);
+        UiUtils.addGap(this, mainContainer, 16);
 
-			// ========== 内容切换区 ==========
-			contentFrameLayout = new FrameLayout(this);
-			contentFrameLayout.setBackgroundColor(Color.parseColor("#1A1A1A"));
-			LinearLayout.LayoutParams contentParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f); // 占据剩余高度
-			contentFrameLayout.setLayoutParams(contentParams);
-			mainContainer.addView(contentFrameLayout);
+        // ===== 选项卡 =====
+        final OreTabs tabs = new OreTabs(this);
+        OreButton tabDev = tabButton("开发", StyleSheet.STYLE_DARK_GRAY);
+        OreButton tabAbout = tabButton("设置", StyleSheet.STYLE_DARK_GRAY);
+        OreButton tabManager = tabButton("管理", StyleSheet.STYLE_DARK_GRAY);
+        tabs.addButton(tabDev);
+        tabs.addButton(tabAbout);
+        tabs.addButton(tabManager);
+        tabs.setActiveIndex(0);
+        mainContainer.addView(tabs);
+        UiUtils.addGap(this, mainContainer, 12);
 
-			// ---- 开发/关于页：可滚动视图 ----
-			scrollView = new ScrollView(this);
-			scrollView.setBackgroundColor(Color.parseColor("#1A1A1A"));
-			LinearLayout root = new LinearLayout(this);
-			root.setOrientation(LinearLayout.VERTICAL);
-			root.setPadding(20, 40, 20, 40);
-			root.setFocusable(true);
-			root.setFocusableInTouchMode(true);
-			root.requestFocus();
-			scrollView.addView(root);
-			contentFrameLayout.addView(scrollView);
+        tabDev.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { tabs.setActiveIndex(0); showTab(0); }
+        });
+        tabAbout.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { tabs.setActiveIndex(1); showTab(1); }
+        });
+        tabManager.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { tabs.setActiveIndex(2); showTab(2); }
+        });
 
-			// ---- 管理页容器（初始隐藏）----
-			managerContainer = new LinearLayout(this);
-			managerContainer.setOrientation(LinearLayout.VERTICAL);
-			managerContainer.setVisibility(View.GONE);
-			contentFrameLayout.addView(managerContainer, new FrameLayout.LayoutParams(
-										   FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        // ===== 内容切换区 =====
+        contentFrameLayout = new FrameLayout(this);
+        contentFrameLayout.setBackgroundColor(Color.parseColor("#1A1A1A"));
+        contentFrameLayout.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        mainContainer.addView(contentFrameLayout);
 
-			// ================= root 内部内容 =================
-			// 进度条
-			importProgressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-			importProgressBar.setMax(100);
-			importProgressBar.setProgress(0);
-			importProgressBar.setVisibility(View.GONE);
-			LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(
+        // ---- 开发/关于页：可滚动 ----
+        scrollView = new ScrollView(this);
+        scrollView.setBackgroundColor(Color.parseColor("#1A1A1A"));
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(20, 40, 20, 40);
+        root.setFocusable(true);
+        root.setFocusableInTouchMode(true);
+        root.requestFocus();
+        scrollView.addView(root);
+        contentFrameLayout.addView(scrollView);
+
+        // ---- 管理页容器（初始隐藏）----
+        managerContainer = new LinearLayout(this);
+        managerContainer.setOrientation(LinearLayout.VERTICAL);
+        managerContainer.setVisibility(View.GONE);
+        contentFrameLayout.addView(managerContainer, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+        // ===== 进度条 =====
+        importProgressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        importProgressBar.setMax(100);
+        importProgressBar.setProgress(0);
+        importProgressBar.setVisibility(View.GONE);
+        importProgressBar.setProgressTintList(ColorStateList.valueOf(Color.WHITE));
+        LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 (int) (6 * getResources().getDisplayMetrics().density));
-			barParams.bottomMargin = (int) (16 * getResources().getDisplayMetrics().density);
-			importProgressBar.setLayoutParams(barParams);
-			importProgressBar.setProgressTintList(ColorStateList.valueOf(Color.WHITE));
-			root.addView(importProgressBar);
+        barParams.bottomMargin = (int) (16 * getResources().getDisplayMetrics().density);
+        importProgressBar.setLayoutParams(barParams);
+        root.addView(importProgressBar);
 
-			// 搜索框
-			searchBox = new OreEditText(this);
-			searchBox.setHint("搜索模组名称,命名空间或ID...");
-			searchBox.setTextSize(12);
-			searchBox.addTextChangedListener(new TextWatcher() {
-					@Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
-					@Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
-					@Override public void afterTextChanged(Editable s) {
-						searchQuery = s.toString().trim();
-						loadProjects();
-					}
-				});
-			searchBox.setOnEditorActionListener(new TextView.OnEditorActionListener() {
-					@Override public boolean onEditorAction(TextView v, int actionId, KeyEvent event) {
-						InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-						imm.hideSoftInputFromWindow(v.getWindowToken(), 0);
-						v.clearFocus();
-						return true;
-					}
-				});
-			root.addView(searchBox);
-			addGap(root, 12);
+        // ===== 搜索框 =====
+        searchBox = new OreEditText(this);
+        searchBox.setHint("搜索模组名称,命名空间或ID...");
+        searchBox.setTextSize(12);
+        searchBox.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(Editable s) {
+                searchQuery = s.toString().trim();
+                loadProjects();
+            }
+        });
+        searchBox.setOnEditorActionListener(new TextView.OnEditorActionListener() {
+            @Override public boolean onEditorAction(TextView v, int actionId, KeyEvent event) {
+                InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+                imm.hideSoftInputFromWindow(v.getWindowToken(), 0);
+                v.clearFocus();
+                return true;
+            }
+        });
+        root.addView(searchBox);
+        UiUtils.addGap(this, root, 12);
 
-			// 项目列表、关于容器
-			projectListContainer = new LinearLayout(this);
-			projectListContainer.setOrientation(LinearLayout.VERTICAL);
-			root.addView(projectListContainer);
-			aboutContainer = new LinearLayout(this);
-			aboutContainer.setOrientation(LinearLayout.VERTICAL);
-			aboutContainer.setVisibility(View.GONE);
-			root.addView(aboutContainer);
-			showAboutPage();
+        // 未授予存储权限时显示：红色说明 + 可点击的授权卡片。
+        storagePermissionAlert = new OreAlert(this);
+        storagePermissionAlert.setText("未授予管理所有文件权限，无法读取和管理本地模组。");
+        storagePermissionAlert.setStyleSheet(StyleSheet.STYLE_RED);
+        storagePermissionAlert.setVisibility(View.GONE);
+        root.addView(storagePermissionAlert);
+        UiUtils.addGap(this, root, 8);
 
-			// 底部按钮（新建/导入，仅开发页显示）
-			buttonRow = new LinearLayout(this);
-			buttonRow.setOrientation(LinearLayout.HORIZONTAL);
-			buttonRow.setGravity(Gravity.CENTER);
-			OreButton btnCreate = new OreButton(this);
-			btnCreate.setText("+ 新建模组");
-			btnCreate.setStyleSheet(StyleSheet.STYLE_GREEN);
-			btnCreate.setOnClickListener(new View.OnClickListener() {
-					@Override public void onClick(View v) {
-						if (!checkStoragePermission()) {
-							showPermissionRequestDialog();
-							return;
-						}
-						showCreateDialog();
-					}
-				});
-			buttonRow.addView(btnCreate);
-			OreButton btnImport = new OreButton(this);
-			btnImport.setText("导入模组");
-			btnImport.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-			btnImport.setOnClickListener(new View.OnClickListener() {
-					@Override public void onClick(View v) {
-						if (!checkStoragePermission()) {
-							showPermissionRequestDialog();
-							return;
-						}
-						showImportDialog();
-					}
-				});
-			buttonRow.addView(btnImport);
-			root.addView(buttonRow);
+        storagePermissionCard = new OreCard(this);
+        storagePermissionCard.setPadding(16, 16, 16, 16);
+        storagePermissionCard.setVisibility(View.GONE);
+        storagePermissionCard.setClickable(true);
+        storagePermissionCard.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                showPermissionRequestDialog();
+            }
+        });
+        LinearLayout permissionCardContent = new LinearLayout(this);
+        permissionCardContent.setOrientation(LinearLayout.VERTICAL);
+        OreTextView permissionTitle = new OreTextView(this);
+        permissionTitle.setText("授予文件管理权限");
+        permissionTitle.setTextColor(Color.WHITE);
+        permissionTitle.setTextSize(16);
+        permissionCardContent.addView(permissionTitle);
+        OreTextView permissionDescription = new OreTextView(this);
+        permissionDescription.setText("点击此卡片前往授权，以使用新建、导入和管理模组功能");
+        permissionDescription.setTextColor(Color.parseColor("#AAAAAA"));
+        permissionDescription.setTextSize(12);
+        permissionDescription.setPadding(0, UiUtils.dp(this, 6), 0, 0);
+        permissionCardContent.addView(permissionDescription);
+        storagePermissionCard.addView(permissionCardContent);
+        root.addView(storagePermissionCard);
+        UiUtils.addGap(this, root, 12);
 
-			// ========== 管理页初始化（WebView）==========
-			setupManagerPage();
+        // ===== 项目列表 / 关于页 =====
+        projectListContainer = new LinearLayout(this);
+        projectListContainer.setOrientation(LinearLayout.VERTICAL);
+        root.addView(projectListContainer);
 
-			// ========== 选项卡事件 ==========
-			tabDev.setOnClickListener(new View.OnClickListener() {
-					@Override public void onClick(View v) { tabs.setActiveIndex(0); showTab(0); }
-				});
-			tabAbout.setOnClickListener(new View.OnClickListener() {
-					@Override public void onClick(View v) { tabs.setActiveIndex(1); showTab(1); }
-				});
-			tabManager.setOnClickListener(new View.OnClickListener() {
-					@Override public void onClick(View v) { tabs.setActiveIndex(2); showTab(2); }
-				});
+        aboutContainer = new LinearLayout(this);
+        aboutContainer.setOrientation(LinearLayout.VERTICAL);
+        aboutContainer.setVisibility(View.GONE);
+        root.addView(aboutContainer);
+        showSettingsPage();
 
-			setContentView(mainContainer);
+        // ===== 底部按钮（新建/导入）=====
+        buttonRow = new LinearLayout(this);
+        buttonRow.setOrientation(LinearLayout.HORIZONTAL);
+        buttonRow.setGravity(Gravity.CENTER);
+        OreButton btnCreate = new OreButton(this);
+        btnCreate.setText("+ 新建模组");
+        btnCreate.setStyleSheet(StyleSheet.STYLE_GREEN);
+        btnCreate.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (!checkStoragePermission()) { showPermissionRequestDialog(); return; }
+                showCreateDialog();
+            }
+        });
+        buttonRow.addView(btnCreate);
 
-			// 权限与首次启动
-			if (checkStoragePermission()) {
-				cleanTempFolders();
-				loadProjects();
-			} else if (prefs.getBoolean("first_run", true)) {
-				showPermissionRequestDialog();
-			}
-			SharedPreferences.Editor editor = prefs.edit();
-			editor.putBoolean("first_run", false);
-			editor.apply();
+        OreButton btnImport = new OreButton(this);
+        btnImport.setText("导入模组");
+        btnImport.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+        btnImport.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (!checkStoragePermission()) { showPermissionRequestDialog(); return; }
+                showImportDialog();
+            }
+        });
+        buttonRow.addView(btnImport);
+        root.addView(buttonRow);
 
-		} catch (Exception e) {
-			LogUtil.logException(e);
-			Toast.makeText(this, "启动失败，请查看日志", Toast.LENGTH_LONG).show();
-		}
-	}
+        setContentView(mainContainer);
+    }
 
-    // ======================== 权限 ========================
+    private OreButton tabButton(String text, StyleSheet style) {
+        OreButton btn = new OreButton(this);
+        btn.setText(text);
+        btn.setStyleSheet(style);
+        return btn;
+    }
+
+    // ==================== 权限 ====================
+
     private boolean checkStoragePermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            if (Environment.isExternalStorageManager()) return true;
-            return ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED &&
-                ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
-        } else {
-            return ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED &&
-                ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
+        if (Build.VERSION.SDK_INT >= 30) {
+            return Environment.isExternalStorageManager();
         }
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                == PackageManager.PERMISSION_GRANTED;
     }
 
     private void requestStoragePermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        if (Build.VERSION.SDK_INT >= 30) {
             try {
-                Intent intent = new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
+                Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
                 intent.setData(Uri.parse("package:" + getPackageName()));
-                if (intent.resolveActivity(getPackageManager()) != null) { startActivityForResult(intent, REQUEST_MANAGE_STORAGE); return; }
-            } catch (Exception e) { LogUtil.logException(e); }
-            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_MANAGE_STORAGE);
+                startActivityForResult(intent, REQUEST_MANAGE_STORAGE);
+            } catch (Exception e) {
+                try {
+                    startActivityForResult(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION),
+                            REQUEST_MANAGE_STORAGE);
+                } catch (Exception e2) {
+                    UiUtils.toast(this, "无法打开存储权限设置");
+                }
+            }
         } else {
-            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_MANAGE_STORAGE);
+            ActivityCompat.requestPermissions(this,
+                    new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                            Manifest.permission.READ_EXTERNAL_STORAGE}, REQUEST_STORAGE_PERMISSION);
+        }
+    }
+
+    /**
+     * 首次启动未授权时自动提示；以后未授权则只显示页面内的提示和授权卡片。
+     * 首次提示状态存于应用私有 SharedPreferences，避免依赖尚不可访问的外部存储。
+     */
+    private void showStoragePermissionUiIfNeeded() {
+        boolean granted = checkStoragePermission();
+        if (storagePermissionAlert != null) {
+            storagePermissionAlert.setVisibility(granted ? View.GONE : View.VISIBLE);
+        }
+        if (storagePermissionCard != null) {
+            storagePermissionCard.setVisibility(granted ? View.GONE : View.VISIBLE);
+        }
+        if (buttonRow != null) {
+            buttonRow.setVisibility(granted ? View.VISIBLE : View.GONE);
+        }
+        if (granted) return;
+
+        android.content.SharedPreferences prefs =
+                getSharedPreferences(Constants.PREFS_NAME, Context.MODE_PRIVATE);
+        if (!prefs.getBoolean(Constants.PREFS_FIRST_RUN, false)) {
+            prefs.edit().putBoolean(Constants.PREFS_FIRST_RUN, true).apply();
+            showPermissionRequestDialog();
         }
     }
 
     private void showPermissionRequestDialog() {
-		OreTextView msgText = new OreTextView(this);
-		msgText.setText("请授予存储权限以实现必要功能");
-		msgText.setTextColor(Color.WHITE);
-		msgText.setTextSize(14);
+        OreTextView msg = new OreTextView(this);
+        msg.setText("需要存储权限才能管理模组文件");
+        msg.setTextColor(Color.WHITE);
+        msg.setTextSize(14);
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setGravity(Gravity.CENTER);
+        int pad = UiUtils.dp(this, 16);
+        layout.setPadding(pad, pad, pad, pad);
+        layout.addView(msg);
 
-		LinearLayout layout = new LinearLayout(this);
-		layout.setOrientation(LinearLayout.VERTICAL);
-		layout.setGravity(Gravity.CENTER);
-		int padding = (int) (16 * getResources().getDisplayMetrics().density);
-		layout.setPadding(padding, padding, padding, padding);
-		layout.addView(msgText);
-
-		OreDialogBuilder builder = new OreDialogBuilder(this);
-		builder.setTitle("权限申请");
-		builder.setView(layout);
-		builder.setPositiveButton("去授权", new DialogInterface.OnClickListener() {
-				@Override public void onClick(DialogInterface dialog, int which) {
-					dialog.dismiss();
-					requestStoragePermission();      // 这里才弹出系统授权
-				}
-			});
-		builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
-				@Override public void onClick(DialogInterface dialog, int which) {
-					dialog.dismiss();
-				}
-			});
-		builder.getNegativeButton().setStyleSheet(StyleSheet.STYLE_RED);
-		builder.show();
-	}
-
-    @Override
-	protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-		super.onActivityResult(requestCode, resultCode, data);
-
-		// 存储权限请求返回
-		if (requestCode == REQUEST_MANAGE_STORAGE) {
-			if (checkStoragePermission()) {
-				loadProjects();
-			} else {
-				Toast.makeText(this, "需要存储权限才能使用", Toast.LENGTH_LONG).show();
-			}
-			return;
-		}
-
-		// WebView 文件选择器返回
-		if (requestCode == FILECHOOSER_RESULT_CODE) {
-			if (mUploadMessage != null) {
-				Uri result = (data == null || resultCode != RESULT_OK) ? null : data.getData();
-				mUploadMessage.onReceiveValue(result == null ? null : new Uri[]{result});
-				mUploadMessage = null;
-			}
-			return;
-		}
-
-		if (resultCode != RESULT_OK || data == null) return;
-
-		// 文件夹导入
-		if (requestCode == REQUEST_IMPORT_FOLDER) {
-			Uri treeUri = data.getData();
-			if (treeUri != null) {
-				getContentResolver().takePersistableUriPermission(
-					treeUri,
-					Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-				);
-				importFromFolder(treeUri);
-			}
-			return;
-		}
-
-		// ZIP导入
-		if (requestCode == REQUEST_IMPORT_ZIP) {
-			Uri zipUri = data.getData();
-			if (zipUri != null) {
-				importFromZip(zipUri);
-			}
-			return;
-		}
-
-		// 导出项目
-		if (requestCode == REQUEST_EXPORT_PROJECT) {
-			final Uri uri = data.getData();
-			if (uri != null && pendingExportDir != null) {
-				final File projectDirToExport = pendingExportDir;
-				pendingExportDir = null;
-				showImportProgress(true);
-				new Thread(new Runnable() {
-						@Override
-						public void run() {
-							try {
-								exportProjectToUri(projectDirToExport, uri);
-								showToast("导出成功");
-							} catch (final Exception e) {
-								showToast("导出失败: " + e.getMessage());
-								LogUtil.logException(e);
-							} finally {
-								hideImportProgress();
-							}
-						}
-					}).start();
-			}
-		}
-	}
+        OreDialogBuilder builder = new OreDialogBuilder(this);
+        builder.setTitle("需要权限");
+        builder.setView(layout);
+        builder.setPositiveButton("去授权", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                requestStoragePermission();
+                dialog.dismiss();
+            }
+        });
+        builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
+        });
+        builder.show();
+    }
 
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQUEST_MANAGE_STORAGE) {
-            if (checkStoragePermission()) loadProjects();
-            else Toast.makeText(this, "权限被拒绝，无法加载模组", Toast.LENGTH_LONG).show();
+        if (requestCode == REQUEST_STORAGE_PERMISSION && grantResults.length > 0
+                && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            loadProjects();
         }
     }
 
-    // ======================== 关于页 ========================
-    private void showAboutPage() {
-		aboutContainer.removeAllViews();
-		ImageView appIcon = new ImageView(this);
-		appIcon.setImageResource(R.drawable.ic_launcher);
-		int iconSize = (int) (80 * getResources().getDisplayMetrics().density);
-		LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(iconSize, iconSize);
-		iconParams.gravity = Gravity.CENTER;
-		iconParams.bottomMargin = (int) (20 * getResources().getDisplayMetrics().density);
-		appIcon.setLayoutParams(iconParams);
-		aboutContainer.addView(appIcon);
+    // ==================== 关于页 / 更新检查 ====================
 
-		OreTextView tvAbout = new OreTextView(this);
-		tvAbout.setText("网易模组制作器\nNemo Mobile Mod Studio\n\n为网易基岩版设计\n可视化编辑模组");
-		tvAbout.setTextColor(Color.WHITE);
-		tvAbout.setTextSize(14);
-		tvAbout.setGravity(Gravity.CENTER);
-		aboutContainer.addView(tvAbout);
+    // ==================== 设置页 ====================
+    private void showSettingsPage() {
+        aboutContainer.removeAllViews();
+        OreTextView title = new OreTextView(this);
+        title.setText("设置");
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(16);
+        title.setGravity(Gravity.CENTER);
+        aboutContainer.addView(title);
+        UiUtils.addGap(this, aboutContainer, 16);
+        // 关于分栏
+        aboutContainer.addView(settingsCard("关于", "版本信息、开源地址、开源鸣谢", AboutActivity.class));
+        // 代码高亮分栏
+        aboutContainer.addView(settingsCard("代码高亮", "文件类型高亮开关、语法颜色配置", HighlightSettingsActivity.class));
+    }
+    private OreCard settingsCard(String title, String desc, final Class<?> target) {
+        OreCard card = new OreCard(this);
+        card.setPadding(16, 20, 16, 20);
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.HORIZONTAL);
+        layout.setGravity(Gravity.CENTER_VERTICAL);
+        OreTextView tvTitle = new OreTextView(this);
+        tvTitle.setText(title);
+        tvTitle.setTextColor(Color.WHITE);
+        tvTitle.setTextSize(14);
+        layout.addView(tvTitle, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f));
+        OreTextView arrow = new OreTextView(this);
+        arrow.setText(">");
+        arrow.setTextColor(Color.parseColor("#888888"));
+        arrow.setTextSize(16);
+        layout.addView(arrow);
+        card.addView(layout);
+        OreTextView tvDesc = new OreTextView(this);
+        tvDesc.setText(desc);
+        tvDesc.setTextColor(Color.GRAY);
+        tvDesc.setTextSize(11);
+        LinearLayout.LayoutParams descParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        descParams.topMargin = UiUtils.dp(this, 4);
+        tvDesc.setLayoutParams(descParams);
+        card.addView(tvDesc);
+        card.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                startActivity(new Intent(MainActivity.this, target));
+            }
+        });
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        params.bottomMargin = UiUtils.dp(this, 10);
+        card.setLayoutParams(params);
+        return card;
+    }
+    private OreCard linkCard(String title, String linkText, final String url) {
+        OreCard card = new OreCard(this);
+        card.setPadding(16, 12, 16, 12);
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        OreTextView t = new OreTextView(this);
+        t.setText(title);
+        t.setTextColor(Color.WHITE);
+        t.setTextSize(14);
+        layout.addView(t);
+        OreTextView l = new OreTextView(this);
+        l.setText(linkText);
+        l.setTextColor(Color.GRAY);
+        l.setTextSize(11);
+        layout.addView(l);
+        card.addView(layout);
+        card.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { openBrowser(url); }
+        });
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        params.topMargin = UiUtils.dp(this, 16);
+        card.setLayoutParams(params);
+        return card;
+    }
 
-		// 版本号卡片（可点击检查更新）
-		OreCard versionCard = new OreCard(this);
-		versionCard.setPadding(16, 12, 16, 12);
+    private void openBrowser(String url) {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+        } catch (Exception e) {
+            UiUtils.toast(this, "无法打开浏览器");
+        }
+    }
 
-// 水平布局：左侧版本文字 + 右侧刷新图标
-		LinearLayout cardLayout = new LinearLayout(this);
-		cardLayout.setOrientation(LinearLayout.HORIZONTAL);
-		cardLayout.setGravity(Gravity.CENTER_VERTICAL);
+    private String getCurrentVersion() {
+        try {
+            PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            return info.versionName;
+        } catch (Exception e) {
+            return "";
+        }
+    }
 
-		String versionName = "";
-		int versionCode = 1;
-		try {
-			PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
-			versionName = info.versionName;
-			versionCode = info.versionCode;
-		} catch (Exception e) {
-			versionName = "未知";
-		}
+    private void checkForUpdate() {
+        UiUtils.toast(this, "正在检查更新...");
+        String currentVersion = getCurrentVersion();
+        UpdateChecker.checkLatest(currentVersion, new UpdateChecker.Callback() {
+            @Override
+            public void onResult(final UpdateChecker.ReleaseInfo release) {
+                UiUtils.runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (release == null) {
+                            UiUtils.toast(MainActivity.this, "已经是最新版本");
+                        } else {
+                            showUpdateDialog(release.version, release.body, release.htmlUrl, false);
+                        }
+                    }
+                });
+            }
 
-		OreTextView versionText = new OreTextView(this);
-		versionText.setText("当前版本：" + versionName + " (" + versionCode + ")");
-		versionText.setTextColor(Color.WHITE);
-		versionText.setTextSize(14);
-		versionText.setGravity(Gravity.CENTER);
+            @Override
+            public void onError(final String message) {
+                UiUtils.runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        UiUtils.toast(MainActivity.this, "检查更新失败: " + message);
+                    }
+                });
+            }
+        });
+    }
 
-// 点击版本卡片触发检查更新
-		versionCard.setOnClickListener(new View.OnClickListener() {
-				@Override
-				public void onClick(View v) {
-					checkForUpdate();
-				}
-			});
+    private void showUpdateDialog(String newVersion, String body, final String releaseUrl, boolean autoCheck) {
+        if (body != null && body.length() > 300) {
+            body = body.substring(0, 300) + "...";
+        }
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        int pad = UiUtils.dp(this, 16);
+        layout.setPadding(pad, pad, pad, pad);
 
-		cardLayout.addView(versionText);
-		versionCard.addView(cardLayout);
+        OreTextView versionLabel = new OreTextView(this);
+        versionLabel.setText("发现新版本：" + newVersion);
+        versionLabel.setTextColor(Color.WHITE);
+        versionLabel.setTextSize(16);
+        layout.addView(versionLabel);
+        UiUtils.addGap(this, layout, 10);
 
-		LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(
-			LinearLayout.LayoutParams.MATCH_PARENT,
-			LinearLayout.LayoutParams.WRAP_CONTENT);
-		cardParams.gravity = Gravity.CENTER;
-		cardParams.topMargin = (int) (16 * getResources().getDisplayMetrics().density);
-		versionCard.setLayoutParams(cardParams);
+        OreTextView detailText = new OreTextView(this);
+        detailText.setText(body == null ? "" : body);
+        detailText.setTextColor(Color.GRAY);
+        detailText.setTextSize(12);
+        layout.addView(detailText);
 
-		aboutContainer.addView(versionCard);
-		
-		// ---------- 开源地址卡片 ----------
-		OreCard openSourceCard = new OreCard(this);
-		openSourceCard.setPadding(16, 12, 16, 12);
+        OreDialogBuilder builder = new OreDialogBuilder(this);
+        builder.setTitle("更新");
+        builder.setView(layout);
+        builder.setNeutralButton("网盘下载", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                openBrowser(Constants.UPDATE_PAN_URL);
+                dialog.dismiss();
+            }
+        });
+        builder.getNeutralButton().setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+        builder.setPositiveButton("GitHub下载", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                openBrowser(releaseUrl);
+                dialog.dismiss();
+            }
+        });
+        builder.getPositiveButton().setStyleSheet(StyleSheet.STYLE_GREEN);
+        builder.setNegativeButton("稍后", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
+        });
 
-		LinearLayout openSourceLayout = new LinearLayout(this);
-		openSourceLayout.setOrientation(LinearLayout.VERTICAL);
+        if (autoCheck) {
+            settings.putBoolean(Constants.PREFS_UPDATE_DIALOG_SHOWN_TODAY + "_" + DateUtils.today(), true);
+        }
+        builder.show();
+    }
 
-		OreTextView openSourceTitle = new OreTextView(this);
-		openSourceTitle.setText("项目开源地址");
-		openSourceTitle.setTextColor(Color.WHITE);
-		openSourceTitle.setTextSize(14);
-		openSourceLayout.addView(openSourceTitle);
+    private void autoCheckForUpdate() {
+        final String today = DateUtils.today();
+        if (today.equals(settings.getString(Constants.PREFS_LAST_CHECK_DATE, ""))) return;
+        settings.putString(Constants.PREFS_LAST_CHECK_DATE, today);
 
-		OreTextView openSourceLink = new OreTextView(this);
-		openSourceLink.setText("github.com/xtt-xt/Nemo-Mobile-Mod-Studio");
-		openSourceLink.setTextColor(Color.GRAY);
-		openSourceLink.setTextSize(11);
-		openSourceLayout.addView(openSourceLink);
+        final String currentVersion = getCurrentVersion();
+        if (currentVersion.isEmpty()) return;
+        UpdateChecker.checkLatest(currentVersion, new UpdateChecker.Callback() {
+            @Override
+            public void onResult(final UpdateChecker.ReleaseInfo release) {
+                if (release == null) return;
+                boolean alreadyShown = settings.getBoolean(Constants.PREFS_UPDATE_DIALOG_SHOWN_TODAY + "_" + today, false);
+                if (alreadyShown) return;
+                UiUtils.runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        showUpdateDialog(release.version, release.body, release.htmlUrl, true);
+                    }
+                });
+            }
 
-		openSourceCard.addView(openSourceLayout);
+            @Override
+            public void onError(String message) {
+                // 自动检查失败静默处理
+            }
+        });
+    }
 
-// 点击跳转到项目主页
-		openSourceCard.setOnClickListener(new View.OnClickListener() {
-				@Override
-				public void onClick(View v) {
-					try {
-						Intent intent = new Intent(Intent.ACTION_VIEW,
-												   Uri.parse("https://github.com/xtt-xt/Nemo-Mobile-Mod-Studio"));
-						startActivity(intent);
-					} catch (Exception e) {
-						Toast.makeText(MainActivity.this, "无法打开浏览器", Toast.LENGTH_SHORT).show();
-					}
-				}
-			});
+    // ==================== 创建模组 ====================
 
-		LinearLayout.LayoutParams openSourceCardParams = new LinearLayout.LayoutParams(
-			LinearLayout.LayoutParams.MATCH_PARENT,
-			LinearLayout.LayoutParams.WRAP_CONTENT);
-		openSourceCardParams.topMargin = (int) (16 * getResources().getDisplayMetrics().density);
-		openSourceCard.setLayoutParams(openSourceCardParams);
-
-		aboutContainer.addView(openSourceCard);
-		// ---------- Ore UI 致谢卡片 ----------
-		OreCard oreUiCard = new OreCard(this);
-		oreUiCard.setPadding(16, 12, 16, 12);
-
-		LinearLayout oreUiLayout = new LinearLayout(this);
-		oreUiLayout.setOrientation(LinearLayout.VERTICAL);
-
-		OreTextView oreUiTitle = new OreTextView(this);
-		oreUiTitle.setText("界面组件库：Ore UI for Android");
-		oreUiTitle.setTextColor(Color.WHITE);
-		oreUiTitle.setTextSize(14);
-		oreUiLayout.addView(oreUiTitle);
-
-		OreTextView oreUiDesc = new OreTextView(this);
-		oreUiDesc.setText("基于 OreUI 标准实现的纯 Kotlin 组件库\n使用 Apache License 2.0 开源许可");
-		oreUiDesc.setTextColor(Color.GRAY);
-		oreUiDesc.setTextSize(11);
-		oreUiLayout.addView(oreUiDesc);
-
-		OreTextView oreUiCredit = new OreTextView(this);
-		oreUiCredit.setText("感谢原作者 TheChuan1503 及所有贡献者");
-		oreUiCredit.setTextColor(Color.parseColor("#AAAAAA"));
-		oreUiCredit.setTextSize(10);
-		oreUiLayout.addView(oreUiCredit);
-
-		oreUiCard.addView(oreUiLayout);
-
-// 点击卡片跳转到你引用的 Ore UI 项目地址
-		oreUiCard.setOnClickListener(new View.OnClickListener() {
-				@Override
-				public void onClick(View v) {
-					try {
-						Intent intent = new Intent(Intent.ACTION_VIEW,
-												   Uri.parse("https://github.com/xtt-xt/ore-ui-for-android"));
-						startActivity(intent);
-					} catch (Exception e) {
-						Toast.makeText(MainActivity.this, "无法打开浏览器", Toast.LENGTH_SHORT).show();
-					}
-				}
-			});
-
-		LinearLayout.LayoutParams cardParams2 = new LinearLayout.LayoutParams(
-			LinearLayout.LayoutParams.MATCH_PARENT,
-			LinearLayout.LayoutParams.WRAP_CONTENT);
-		cardParams2.topMargin = (int) (16 * getResources().getDisplayMetrics().density);
-		oreUiCard.setLayoutParams(cardParams2);
-
-		aboutContainer.addView(oreUiCard);
-	}
-
-	private void checkForUpdate() {
-		Toast.makeText(this, "正在检查更新...", Toast.LENGTH_SHORT).show();
-
-		new Thread(new Runnable() {
-				@Override
-				public void run() {
-					try {
-						URL url = new URL("https://api.github.com/repos/xtt-xt/Nemo-Mobile-Mod-Studio/releases/latest");
-						HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-						conn.setRequestMethod("GET");
-						conn.setConnectTimeout(10000);
-						conn.setReadTimeout(10000);
-						conn.setRequestProperty("User-Agent", "NemoModStudio");
-						conn.setRequestProperty("Accept", "application/json");
-
-						InputStream is = conn.getInputStream();
-						BufferedReader reader = new BufferedReader(new InputStreamReader(is));
-						StringBuilder response = new StringBuilder();
-						String line;
-						while ((line = reader.readLine()) != null) {
-							response.append(line);
-						}
-						reader.close();
-						conn.disconnect();
-
-						String responseStr = response.toString();
-
-						// 检查响应是否是 JSON
-						if (!responseStr.trim().startsWith("{") && !responseStr.trim().startsWith("[")) {
-							runOnUiThread(new Runnable() {
-									@Override public void run() {
-										Toast.makeText(MainActivity.this, "检查更新失败：服务器返回异常，请稍后再试", Toast.LENGTH_LONG).show();
-									}
-								});
-							return;
-						}
-
-						// 解析 JSON
-						JSONObject json = new JSONObject(responseStr);
-						final String latestTag = json.optString("tag_name", "");
-						final String body = json.optString("body", "");
-						final String releaseUrl = json.optString("html_url", "");
-
-						// 去掉 tag_name 前面的 "v"
-						final String latestVersion = latestTag.startsWith("v") ? latestTag.substring(1) : latestTag;
-
-						// 获取当前版本
-						final String currentVersion;
-						try {
-							PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
-							currentVersion = info.versionName;
-						} catch (Exception e) {
-							runOnUiThread(new Runnable() {
-									@Override public void run() {
-										Toast.makeText(MainActivity.this, "获取当前版本失败", Toast.LENGTH_SHORT).show();
-									}
-								});
-							return;
-						}
-
-						// 比较版本（简单字符串比较）
-						if (!latestVersion.equals(currentVersion)) {
-							final String finalBody = body;
-							runOnUiThread(new Runnable() {
-									@Override public void run() {
-										// 手动检查，不记录自动弹窗标记（传入 false）
-										showUpdateDialog(latestVersion, finalBody, releaseUrl, false);
-									}
-								});
-						} else {
-							runOnUiThread(new Runnable() {
-									@Override public void run() {
-										Toast.makeText(MainActivity.this, "已经是最新版本", Toast.LENGTH_LONG).show();
-									}
-								});
-						}
-					} catch (final Exception e) {
-						runOnUiThread(new Runnable() {
-								@Override public void run() {
-									Toast.makeText(MainActivity.this, "检查更新失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
-								}
-							});
-					}
-				}
-			}).start();
-	}
-	
-	private void showUpdateDialog(final String newVersion, String body, final String releaseUrl, final boolean autoCheck) {
-		if (body.length() > 300) {
-			body = body.substring(0, 300) + "...";
-		}
-
-		LinearLayout layout = new LinearLayout(this);
-		layout.setOrientation(LinearLayout.VERTICAL);
-		int pad = (int) (16 * getResources().getDisplayMetrics().density);
-		layout.setPadding(pad, pad, pad, pad);
-
-		OreTextView versionLabel = new OreTextView(this);
-		versionLabel.setText("发现新版本：" + newVersion);
-		versionLabel.setTextColor(Color.WHITE);
-		versionLabel.setTextSize(16);
-		layout.addView(versionLabel);
-		addGap(layout, 10);
-
-		OreTextView detailText = new OreTextView(this);
-		detailText.setText(body);
-		detailText.setTextColor(Color.GRAY);
-		detailText.setTextSize(12);
-		layout.addView(detailText);
-
-		OreDialogBuilder builder = new OreDialogBuilder(this);
-		builder.setTitle("更新");
-		builder.setView(layout);
-
-		// 网盘下载（Neutral 按钮）
-		builder.setNeutralButton("网盘下载", new DialogInterface.OnClickListener() {
-				@Override
-				public void onClick(DialogInterface dialog, int which) {
-					try {
-						Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(UPDATE_PAN_URL));
-						startActivity(intent);
-					} catch (Exception e) {
-						Toast.makeText(MainActivity.this, "无法打开浏览器", Toast.LENGTH_SHORT).show();
-					}
-					dialog.dismiss();
-				}
-			});
-		builder.getNeutralButton().setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-
-		// GitHub 下载（Positive 按钮）
-		builder.setPositiveButton("GitHub下载", new DialogInterface.OnClickListener() {
-				@Override
-				public void onClick(DialogInterface dialog, int which) {
-					try {
-						Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(releaseUrl));
-						startActivity(intent);
-					} catch (Exception e) {
-						Toast.makeText(MainActivity.this, "无法打开浏览器", Toast.LENGTH_SHORT).show();
-					}
-					dialog.dismiss();
-				}
-			});
-		builder.getPositiveButton().setStyleSheet(StyleSheet.STYLE_GREEN);
-
-		// 稍后（Negative 按钮）
-		builder.setNegativeButton("稍后", new DialogInterface.OnClickListener() {
-				@Override
-				public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
-			});
-
-		// 如果是自动检查弹窗，标记今天已弹窗
-		if (autoCheck) {
-			SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault());
-			String today = sdf.format(new Date());
-			SharedPreferences.Editor editor = prefs.edit();
-			editor.putBoolean(PREFS_UPDATE_DIALOG_SHOWN_TODAY + "_" + today, true);
-			editor.apply();
-		}
-
-		builder.show();
-	}
-	
-    // ======================== 命名空间验证 ========================
     private boolean isValidNamespace(String ns) {
-        if (ns.isEmpty()) return true;
-        return ns.matches("[a-z_]+");
+        return ns.isEmpty() || ns.matches("[a-z_]+");
     }
 
     private void updateNsValidation(String ns, OreButton positiveBtn, OreAlert alert) {
-        if (ns.isEmpty()) { alert.setVisibility(View.GONE); positiveBtn.setEnabled(true); return; }
-        if (isValidNamespace(ns)) { alert.setVisibility(View.GONE); positiveBtn.setEnabled(true); }
-        else { alert.setVisibility(View.VISIBLE); positiveBtn.setEnabled(false); }
+        if (ns.isEmpty()) {
+            alert.setVisibility(View.GONE);
+            positiveBtn.setEnabled(true);
+            return;
+        }
+        if (isValidNamespace(ns)) {
+            alert.setVisibility(View.GONE);
+            positiveBtn.setEnabled(true);
+        } else {
+            alert.setVisibility(View.VISIBLE);
+            positiveBtn.setEnabled(false);
+        }
     }
 
-    // ======================== 创建模组 ========================
     private void showCreateDialog() {
         final OreEditText inputName = new OreEditText(this);
         inputName.setHint("模组名称");
-
         final OreEditText inputNamespace = new OreEditText(this);
         inputNamespace.setHint("命名空间（小写字母_）");
 
-        // 开关 + 文字标签水平排列
         LinearLayout scriptRow = new LinearLayout(this);
         scriptRow.setOrientation(LinearLayout.HORIZONTAL);
         scriptRow.setGravity(Gravity.CENTER_VERTICAL);
-
         final OreSwitch switchScript = new OreSwitch(this);
-        switchScript.setChecked(true); // 默认开启
+        switchScript.setChecked(true);
         scriptRow.addView(switchScript);
-
         OreTextView scriptLabel = new OreTextView(this);
         scriptLabel.setText("包含脚本");
         scriptLabel.setTextColor(Color.WHITE);
@@ -783,12 +628,13 @@ public class MainActivity extends Activity {
         scriptLabel.setPadding(8, 0, 0, 0);
         scriptRow.addView(scriptLabel);
 
-        // 主布局（竖向）
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
+        int dialogPadding = UiUtils.dp(this, 16);
+        layout.setPadding(dialogPadding, dialogPadding, dialogPadding, dialogPadding);
         layout.addView(inputName);
         layout.addView(inputNamespace);
-        layout.addView(scriptRow);   // 把开关行加进去
+        layout.addView(scriptRow);
 
         final OreAlert nsAlert = new OreAlert(this);
         nsAlert.setText("命名空间只能包含小写字母和下划线");
@@ -799,259 +645,370 @@ public class MainActivity extends Activity {
         OreDialogBuilder builder = new OreDialogBuilder(this);
         builder.setTitle("新建模组");
         builder.setView(layout);
-
         builder.setPositiveButton("创建", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialog, int which) {
-                    String name = inputName.getText().toString().trim();
-                    String namespace = inputNamespace.getText().toString().trim();
-                    if (name.isEmpty()) {
-                        Toast.makeText(MainActivity.this, "名称不能为空", Toast.LENGTH_SHORT).show();
-                        return;
-                    }
-                    if (namespace.isEmpty()) namespace = "test";
-                    if (!isValidNamespace(namespace)) {
-                        Toast.makeText(MainActivity.this, "命名空间格式错误", Toast.LENGTH_LONG).show();
-                        return;
-                    }
-                    boolean withScript = switchScript.isChecked();
-                    createNewProject(name, namespace, withScript);
-                    dialog.dismiss();
-                }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) {
+                String name = inputName.getText().toString().trim();
+                String namespace = inputNamespace.getText().toString().trim();
+                if (name.isEmpty()) { UiUtils.toast(MainActivity.this, "名称不能为空"); return; }
+                if (namespace.isEmpty()) namespace = "test";
+                if (!isValidNamespace(namespace)) { UiUtils.toast(MainActivity.this, "命名空间格式错误"); return; }
+                projectManager.createProject(name, namespace, switchScript.isChecked());
+                UiUtils.toast(MainActivity.this, "创建成功");
+                dialog.dismiss();
+                loadProjects();
+            }
+        });
         builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
+        });
         builder.getNegativeButton().setStyleSheet(StyleSheet.STYLE_RED);
 
         final OreButton positiveBtn = builder.getPositiveButton();
         updateNsValidation(inputNamespace.getText().toString(), positiveBtn, nsAlert);
-
         inputNamespace.addTextChangedListener(new TextWatcher() {
-                @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
-                @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
-                @Override public void afterTextChanged(Editable s) {
-                    updateNsValidation(s.toString(), positiveBtn, nsAlert);
-                }
-            });
-
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(Editable s) {
+                updateNsValidation(s.toString(), positiveBtn, nsAlert);
+            }
+        });
         builder.show();
     }
 
-    private void createNewProject(String editName, String namespace, boolean withScript) {
-        String projectUUID = UUID.randomUUID().toString().replace("-", "");
-        File projectDir = new File(MOD_FOLDER_PATH, projectUUID);
-        projectDir.mkdirs();
+        private boolean legacyMigrated = false;
 
-        String behSuffix = randomString(8);
-        String resSuffix = randomString(8);
-
-        File behDir = new File(projectDir, "behavior_pack_" + behSuffix);
-        behDir.mkdirs();
-        new File(behDir, "entities").mkdirs();
-
-        // 如果选择包含脚本，在内创建脚本文件夹
-        if (withScript) {
-            String scriptSuffix = randomString(8);
-            File scriptDir = new File(behDir, "Script_NeteaseMod" + scriptSuffix);
-            scriptDir.mkdirs();
-            // 写入 __init__.py (空文件)
-            writeStringToFile(new File(scriptDir, "__init__.py"), "");
-            // 写入 modMain.py（模板）
-            String modMainContent = 
-                "# -*- coding: utf-8 -*-\n\n" +
-                "from mod.common.mod import Mod\n\n\n" +
-                "@Mod.Binding(name=\"Script_NeteaseMod" + scriptSuffix + "\", version=\"0.0.1\")\n" +
-                "class Script_NeteaseMod" + scriptSuffix + "(object):\n\n" +
-                "    def __init__(self):\n" +
-                "        pass\n\n" +
-                "    @Mod.InitServer()\n" +
-                "    def Script_NeteaseMod" + scriptSuffix + "ServerInit(self):\n" +
-                "        pass\n\n" +
-                "    @Mod.DestroyServer()\n" +
-                "    def Script_NeteaseMod" + scriptSuffix + "ServerDestroy(self):\n" +
-                "        pass\n\n" +
-                "    @Mod.InitClient()\n" +
-                "    def Script_NeteaseMod" + scriptSuffix + "ClientInit(self):\n" +
-                "        pass\n\n" +
-                "    @Mod.DestroyClient()\n" +
-                "    def Script_NeteaseMod" + scriptSuffix + "ClientDestroy(self):\n" +
-                "        pass\n";
-            writeStringToFile(new File(scriptDir, "modMain.py"), modMainContent);
+    /** 将旧版 McMod/ 根目录下的项目文件夹迁移到 McMod/mods/（首次加载时执行一次）。 */
+    private void migrateLegacyProjects() {
+        if (legacyMigrated) return;
+        legacyMigrated = true;
+        try {
+            File root = new File(Constants.MOD_FOLDER_PATH);
+            File mods = new File(Constants.PROJECTS_DIR);
+            if (!root.exists() || !root.isDirectory()) return;
+            if (!mods.exists()) mods.mkdirs();
+            File[] entries = root.listFiles();
+            if (entries == null) return;
+            for (File e : entries) {
+                String n = e.getName();
+                // 保留系统目录：log 是崩溃日志目录，绝不能作为项目迁移到 mods/log。
+                // 其余根目录零散文件（如 setting.json）本身不满足目录条件，不会迁移。
+                if (n.equals("mods") || n.equals("Download") || n.equals("log") || n.startsWith("temp_")) continue;
+                if (!e.isDirectory()) continue;
+                File dest = new File(mods, n);
+                if (dest.exists()) continue;
+                try {
+                    if (!e.renameTo(dest)) {
+                        // renameTo 失败（SELinux 等）则复制后删除
+                        FileUtils.copyDirectory(e, dest);
+                        FileUtils.deleteRecursive(e);
+                    }
+                    LogUtil.log("已迁移项目目录: " + n + " -> mods/" + n);
+                } catch (Exception ex) {
+                    LogUtil.logException(ex);
+                }
+            }
+        } catch (Exception e) {
+            LogUtil.logException(e);
         }
-
-        File resDir = new File(projectDir, "resource_pack_" + resSuffix);
-        resDir.mkdirs();
-        new File(resDir, "textures").mkdirs();
-
-        // 行为包 manifest.json
-        String behHeaderUUID = UUID.randomUUID().toString();
-        String behModuleUUID = UUID.randomUUID().toString();
-        writeStringToFile(new File(behDir, "manifest.json"),
-                          "{\n    \"format_version\": 1,\n    \"header\": {\n        \"min_engine_version\": [1,18,0],\n        \"uuid\": \"" + behHeaderUUID + "\",\n        \"version\": [0,0,1]\n    },\n    \"modules\": [{\n        \"type\": \"data\",\n        \"uuid\": \"" + behModuleUUID + "\",\n        \"version\": [0,0,1]\n    }]\n}");
-
-        // 资源包 manifest.json
-        String resHeaderUUID = UUID.randomUUID().toString();
-        String resModuleUUID = UUID.randomUUID().toString();
-        writeStringToFile(new File(resDir, "manifest.json"),
-                          "{\n    \"format_version\": 1,\n    \"header\": {\n        \"min_engine_version\": [1,18,0],\n        \"uuid\": \"" + resHeaderUUID + "\",\n        \"version\": [0,0,1]\n    },\n    \"modules\": [{\n        \"type\": \"resources\",\n        \"uuid\": \"" + resModuleUUID + "\",\n        \"version\": [0,0,1]\n    }]\n}");
-
-        // studio.json
-		writeStringToFile(new File(projectDir, "studio.json"),
-						  "{\n" +
-						  "  \"id\": \"" + projectUUID + "\",\n" +
-						  "  \"name\": \"" + editName + "\",\n" +
-						  "  \"namespace\": \"" + namespace + "\",\n" +
-						  "  \"about\": \"" + editName + "模组，使用网易模组制作器 (Nemo Mobile Mod Studio) 生成。\\n开源地址: https://github.com/xtt-xt/Nemo-Mobile-Mod-Studio\",\n" +
-						  "  \"disclaimer\": \"本模组与Mojang及网易无任何关联，模组制作器不承担因模组产生的任何后果\"\n" +
-						  "}");
     }
 
-    // ======================== 读取方法 ========================
-    private String getProjectName(File projectDir) {
-        File studioFile = new File(projectDir, "studio.json");
-        if (!studioFile.exists()) return projectDir.getName();
+    // ==================== 项目列表 ====================
+    private void loadProjects() {
         try {
-            FileInputStream fis = new FileInputStream(studioFile);
-            byte[] data = new byte[(int) studioFile.length()];
-            fis.read(data); fis.close();
-            String content = new String(data, "UTF-8");
-            int start = content.indexOf("\"name\"");
-            if (start != -1) {
-                start = content.indexOf("\"", start + 6);
-                if (start != -1) {
-                    int end = content.indexOf("\"", start + 1);
-                    if (end != -1) return content.substring(start + 1, end);
+            if (!checkStoragePermission()) return;
+            migrateLegacyProjects();
+            projectListContainer.removeAllViews();
+
+            File modDir = new File(Constants.PROJECTS_DIR);
+            if (!modDir.exists()) modDir.mkdirs();
+
+            File[] allEntries = modDir.listFiles(new java.io.FileFilter() {
+                @Override public boolean accept(File file) {
+                    return file.isDirectory() && !file.getName().startsWith("temp_");
                 }
+            });
+            if (allEntries == null || allEntries.length == 0) {
+                projectListContainer.addView(emptyText("暂无模组项目，点击下方按钮创建"));
+                return;
             }
-        } catch (Exception ignored) {}
-        return projectDir.getName();
+
+            Map<String, File> originalMap = new LinkedHashMap<>();
+            Map<String, List<File>> backupSubMap = new LinkedHashMap<>();
+            List<File> backupContainers = new ArrayList<>();
+            List<File> normalProjects = new ArrayList<>();
+
+            for (File entry : allEntries) {
+                if (entry.getName().endsWith("_back")) backupContainers.add(entry);
+                else normalProjects.add(entry);
+            }
+            for (File project : normalProjects) originalMap.put(project.getName(), project);
+            for (File container : backupContainers) {
+                String originalId = container.getName().substring(0, container.getName().length() - 5);
+                File[] subDirs = container.listFiles(new java.io.FileFilter() {
+                    @Override public boolean accept(File file) { return file.isDirectory(); }
+                });
+                List<File> subList = new ArrayList<>();
+                if (subDirs != null) for (File sub : subDirs) subList.add(sub);
+                backupSubMap.put(originalId, subList);
+            }
+
+            boolean hasResults = false;
+            Set<String> allIds = new LinkedHashSet<>();
+            allIds.addAll(originalMap.keySet());
+            allIds.addAll(backupSubMap.keySet());
+
+            for (final String originalId : allIds) {
+                File originalProject = originalMap.get(originalId);
+                List<File> backups = backupSubMap.get(originalId);
+                if (backups == null) backups = new ArrayList<>();
+                File nameSource = originalProject != null ? originalProject
+                        : (backups.size() > 0 ? backups.get(0) : null);
+                String displayName = nameSource == null ? originalId : projectManager.getProjectName(nameSource);
+                String namespace = "";
+                if (nameSource != null) {
+                    namespace = projectManager.getProjectNamespace(nameSource);
+                }
+
+                if (!searchQuery.isEmpty()) {
+                    boolean match = displayName.toLowerCase().contains(searchQuery.toLowerCase())
+                            || originalId.toLowerCase().contains(searchQuery.toLowerCase())
+                            || namespace.toLowerCase().contains(searchQuery.toLowerCase());
+                    if (!match) {
+                        for (File backup : backups) {
+                            if (backup.getName().toLowerCase().contains(searchQuery.toLowerCase())) {
+                                match = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!match) continue;
+                }
+                hasResults = true;
+
+                if (originalProject != null) projectListContainer.addView(createProjectCard(originalProject));
+                if (backups.size() > 0) {
+                    int maxDisplay = Math.min(backups.size(), 5);
+                    OreAccordion accordion = new OreAccordion(this);
+                    accordion.setTitle("备份版本");
+                    accordion.setSubtitle("共 " + backups.size() + " 个备份");
+                    LinearLayout backupContent = new LinearLayout(this);
+                    backupContent.setOrientation(LinearLayout.VERTICAL);
+                    backupContent.setLayoutParams(new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+                    backupContent.setPadding(0, 8, 0, 8);
+                    for (int i = 0; i < maxDisplay; i++) {
+                        backupContent.addView(createProjectCard(backups.get(i)));
+                        if (i < maxDisplay - 1) UiUtils.addGap(this, backupContent, 8);
+                    }
+                    if (backups.size() > 5) {
+                        UiUtils.addGap(this, backupContent, 8);
+                        OreButton viewAllBtn = new OreButton(this);
+                        viewAllBtn.setText("查看全部备份 (" + backups.size() + "个)");
+                        viewAllBtn.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+                        viewAllBtn.setOnClickListener(new View.OnClickListener() {
+                            @Override public void onClick(View v) {
+                                Intent i = new Intent(MainActivity.this, BackupsActivity.class);
+                                i.putExtra("original_id", originalId);
+                                startActivity(i);
+                            }
+                        });
+                        backupContent.addView(viewAllBtn);
+                    }
+                    accordion.setContentView(backupContent);
+                    projectListContainer.addView(accordion);
+                }
+                UiUtils.addGap(this, projectListContainer, 12);
+            }
+            if (!hasResults) projectListContainer.addView(emptyText("没有找到匹配的项目"));
+        } catch (Exception e) {
+            LogUtil.logException(e);
+        }
     }
 
-    private String getProjectId(File projectDir) {
-        File studioFile = new File(projectDir, "studio.json");
-        if (!studioFile.exists()) return projectDir.getName();
+    private OreTextView emptyText(String msg) {
+        OreTextView tv = new OreTextView(this);
+        tv.setText(msg);
+        tv.setTextColor(Color.WHITE);
+        return tv;
+    }
+
+    private OreCard createProjectCard(final File projectDir) {
+        OreCard card = new OreCard(this);
+        card.setPadding(16, 12, 16, 12);
+
+        LinearLayout cardLayout = new LinearLayout(this);
+        cardLayout.setOrientation(LinearLayout.HORIZONTAL);
+        cardLayout.setGravity(Gravity.CENTER_VERTICAL);
+
+        final boolean isCopy = projectDir.getParentFile() != null
+                && projectDir.getParentFile().getName().endsWith("_back");
+
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(isCopy ? android.R.drawable.ic_menu_save : android.R.drawable.ic_menu_gallery);
+        icon.setColorFilter(Color.parseColor("#AAAAAA"));
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(80, 80);
+        iconParams.setMargins(0, 0, 16, 0);
+        icon.setLayoutParams(iconParams);
+        cardLayout.addView(icon);
+
+        LinearLayout textLayout = new LinearLayout(this);
+        textLayout.setOrientation(LinearLayout.VERTICAL);
+
+        String projectName = projectManager.getProjectName(projectDir);
+        if (isCopy) projectName += " (副本)";
+
+        OreTextView nameText = new OreTextView(this);
+        nameText.setText(projectName);
+        nameText.setTextSize(16);
+        nameText.setTextColor(Color.WHITE);
+        textLayout.addView(nameText);
+
+        OreTextView timeText = new OreTextView(this);
+        if (isCopy) {
+            timeText.setText("备份保存于: " + formatBackupTime(projectDir.getName()));
+        } else {
+            timeText.setText("修改时间: " + DateUtils.formatMillis(projectDir.lastModified()));
+        }
+        timeText.setTextSize(12);
+        timeText.setTextColor(Color.GRAY);
+        textLayout.addView(timeText);
+
+        cardLayout.addView(textLayout);
+        card.addView(cardLayout);
+
+        card.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (isCopy) showCopyOptions(projectDir);
+                else showProjectOptions(projectDir);
+            }
+        });
+        return card;
+    }
+
+    private String formatBackupTime(String folderName) {
         try {
-            FileInputStream fis = new FileInputStream(studioFile);
-            byte[] data = new byte[(int) studioFile.length()];
-            fis.read(data); fis.close();
-            String content = new String(data, "UTF-8");
-            int start = content.indexOf("\"id\"");
-            if (start != -1) {
-                start = content.indexOf("\"", start + 4);
-                if (start != -1) {
-                    int end = content.indexOf("\"", start + 1);
-                    if (end != -1) return content.substring(start + 1, end);
-                }
-            }
-        } catch (Exception ignored) {}
-        return projectDir.getName();
+            long timestamp = Long.parseLong(folderName) * 1000L;
+            return DateUtils.formatMillis(timestamp);
+        } catch (Exception e) {
+            return folderName;
+        }
     }
 
-    private String getProjectNamespace(File projectDir) {
-        File studioFile = new File(projectDir, "studio.json");
-        if (!studioFile.exists()) return "test";
-        try {
-            FileInputStream fis = new FileInputStream(studioFile);
-            byte[] data = new byte[(int) studioFile.length()];
-            fis.read(data); fis.close();
-            String content = new String(data, "UTF-8");
-            int start = content.indexOf("\"namespace\"");
-            if (start != -1) {
-                start = content.indexOf("\"", start + 12);
-                if (start != -1) {
-                    int end = content.indexOf("\"", start + 1);
-                    if (end != -1) return content.substring(start + 1, end);
-                }
-            }
-        } catch (Exception ignored) {}
-        return "test";
+    // ==================== 项目操作 ====================
+
+    private LinearLayout centeredMessage(String text) {
+        OreTextView msg = new OreTextView(this);
+        msg.setText(text);
+        msg.setTextColor(Color.WHITE);
+        msg.setTextSize(14);
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setGravity(Gravity.CENTER);
+        int pad = UiUtils.dp(this, 16);
+        layout.setPadding(pad, pad, pad, pad);
+        layout.addView(msg, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        return layout;
     }
 
-    // ======================== 项目设置 ========================
+    private void showProjectOptions(final File projectDir) {
+        OreDialogBuilder builder = new OreDialogBuilder(this);
+        builder.setTitle("管理项目");
+        builder.setView(centeredMessage("请选择操作"));
+        builder.addButton("进入", StyleSheet.STYLE_GREEN, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                Intent intent = new Intent(MainActivity.this, EditorActivity.class);
+                intent.putExtra("project_path", projectDir.getAbsolutePath());
+                startActivity(intent);
+                dialog.dismiss();
+            }
+        });
+        builder.addButton("设置", StyleSheet.STYLE_WHITE, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                showProjectSettings(projectDir);
+                dialog.dismiss();
+            }
+        });
+        builder.addButton("导出", StyleSheet.STYLE_PURPLE, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                if (!checkStoragePermission()) {
+                    UiUtils.toast(MainActivity.this, "需要存储权限才能导出");
+                    dialog.dismiss();
+                    return;
+                }
+                startExportProject(projectDir);
+                dialog.dismiss();
+            }
+        });
+        builder.addButton("取消", null, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
+        });
+        builder.show();
+    }
+
     private void showProjectSettings(final File projectDir) {
-        String currentName = getProjectName(projectDir);
-        String projectId = getProjectId(projectDir);
-        final String currentNamespace = getProjectNamespace(projectDir);
+        final String currentNamespace = projectManager.getProjectNamespace(projectDir);
 
         LinearLayout contentLayout = new LinearLayout(this);
         contentLayout.setOrientation(LinearLayout.VERTICAL);
         contentLayout.setGravity(Gravity.CENTER);
-        int padding = (int) (16 * getResources().getDisplayMetrics().density);
+        int padding = UiUtils.dp(this, 16);
         contentLayout.setPadding(padding, padding, padding, padding);
 
-        OreTextView nameText = new OreTextView(this);
-        nameText.setText("项目名: " + currentName);
-        nameText.setTextColor(Color.WHITE);
-        nameText.setTextSize(14);
-        contentLayout.addView(nameText);
-        addGap(contentLayout, 8);
+        contentLayout.addView(infoText("项目名: " + projectManager.getProjectName(projectDir), 14, Color.WHITE));
+        UiUtils.addGap(this, contentLayout, 8);
+        contentLayout.addView(infoText("项目ID: " + projectManager.getProjectId(projectDir), 12, Color.GRAY));
+        UiUtils.addGap(this, contentLayout, 4);
+        contentLayout.addView(infoText("命名空间: " + currentNamespace, 12, Color.GRAY));
+        UiUtils.addGap(this, contentLayout, 8);
 
-        OreTextView idText = new OreTextView(this);
-        idText.setText("项目ID: " + projectId);
-        idText.setTextColor(Color.GRAY);
-        idText.setTextSize(12);
-        contentLayout.addView(idText);
-        addGap(contentLayout, 4);
-
-        OreTextView nsText = new OreTextView(this);
-        nsText.setText("命名空间: " + currentNamespace);
-        nsText.setTextColor(Color.GRAY);
-        nsText.setTextSize(12);
-        contentLayout.addView(nsText);
-        addGap(contentLayout, 8);
-
-        OreButton btnChangeNs = new OreButton(this);
-        btnChangeNs.setText("修改命名空间");
-        btnChangeNs.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-        btnChangeNs.setOnClickListener(new View.OnClickListener() {
-                @Override public void onClick(View v) { showNamespaceDialog(projectDir, currentNamespace); }
-            });
-        contentLayout.addView(btnChangeNs);
-        addGap(contentLayout, 8);
-
-        OreButton btnRename = new OreButton(this);
-        btnRename.setText("重命名");
-        btnRename.setStyleSheet(StyleSheet.STYLE_WHITE);
-        btnRename.setOnClickListener(new View.OnClickListener() {
-                @Override public void onClick(View v) { showRenameDialog(projectDir); }
-            });
-        contentLayout.addView(btnRename);
-        addGap(contentLayout, 8);
-
-        OreButton btnBackup = new OreButton(this);
-        btnBackup.setText("添加备份");
-        btnBackup.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-        btnBackup.setOnClickListener(new View.OnClickListener() {
-                @Override public void onClick(View v) { createBackup(projectDir); }
-            });
-        contentLayout.addView(btnBackup);
-        addGap(contentLayout, 8);
-
-        OreButton btnOpen = new OreButton(this);
-        btnOpen.setText("打开文件夹");
-        btnOpen.setStyleSheet(StyleSheet.STYLE_GREEN);
-        btnOpen.setOnClickListener(new View.OnClickListener() {
-                @Override public void onClick(View v) { openProjectFolder(projectDir); }
-            });
-        contentLayout.addView(btnOpen);
-        addGap(contentLayout, 8);
-
-        OreButton btnDelete = new OreButton(this);
-        btnDelete.setText("删除");
-        btnDelete.setStyleSheet(StyleSheet.STYLE_RED);
-        btnDelete.setOnClickListener(new View.OnClickListener() {
-                @Override public void onClick(View v) { showDeleteConfirm(projectDir); }
-            });
-        contentLayout.addView(btnDelete);
+        contentLayout.addView(settingButton("修改命名空间", StyleSheet.STYLE_DARK_GRAY, new View.OnClickListener() {
+            @Override public void onClick(View v) { showNamespaceDialog(projectDir, currentNamespace); }
+        }));
+        UiUtils.addGap(this, contentLayout, 8);
+        contentLayout.addView(settingButton("重命名", StyleSheet.STYLE_WHITE, new View.OnClickListener() {
+            @Override public void onClick(View v) { showRenameDialog(projectDir); }
+        }));
+        UiUtils.addGap(this, contentLayout, 8);
+        contentLayout.addView(settingButton("添加备份", StyleSheet.STYLE_DARK_GRAY, new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                projectManager.createBackup(projectDir);
+                loadProjects();
+            }
+        }));
+        UiUtils.addGap(this, contentLayout, 8);
+        contentLayout.addView(settingButton("打开文件夹", StyleSheet.STYLE_GREEN, new View.OnClickListener() {
+            @Override public void onClick(View v) { openProjectFolder(projectDir); }
+        }));
+        UiUtils.addGap(this, contentLayout, 8);
+        contentLayout.addView(settingButton("删除", StyleSheet.STYLE_RED, new View.OnClickListener() {
+            @Override public void onClick(View v) { showDeleteConfirm(projectDir); }
+        }));
 
         OreDialogBuilder builder = new OreDialogBuilder(this);
         builder.setTitle("项目设置");
         builder.setView(contentLayout);
         builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
+        });
         builder.show();
+    }
+
+    private OreTextView infoText(String text, int size, int color) {
+        OreTextView tv = new OreTextView(this);
+        tv.setText(text);
+        tv.setTextColor(color);
+        tv.setTextSize(size);
+        return tv;
+    }
+
+    private OreButton settingButton(String text, StyleSheet style, View.OnClickListener listener) {
+        OreButton btn = new OreButton(this);
+        btn.setText(text);
+        btn.setStyleSheet(style);
+        btn.setOnClickListener(listener);
+        return btn;
     }
 
     private void showNamespaceDialog(final File projectDir, String currentNs) {
@@ -1066,438 +1023,449 @@ public class MainActivity extends Activity {
 
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
+        int dialogPadding = UiUtils.dp(this, 16);
+        layout.setPadding(dialogPadding, dialogPadding, dialogPadding, dialogPadding);
         layout.addView(input);
         layout.addView(alert);
 
         OreDialogBuilder builder = new OreDialogBuilder(this);
         builder.setTitle("修改命名空间");
         builder.setView(layout);
-
         builder.setPositiveButton("确定", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) {
-                    String ns = input.getText().toString().trim();
-                    if (ns.isEmpty()) ns = "test";
-                    if (!isValidNamespace(ns)) { Toast.makeText(MainActivity.this, "命名空间格式错误", Toast.LENGTH_LONG).show(); return; }
-                    updateStudioNamespace(projectDir, ns);
-                    dialog.dismiss();
-                }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) {
+                String ns = input.getText().toString().trim();
+                if (ns.isEmpty()) ns = "test";
+                if (!isValidNamespace(ns)) { UiUtils.toast(MainActivity.this, "命名空间格式错误"); return; }
+                projectManager.updateNamespace(projectDir, ns);
+                dialog.dismiss();
+                loadProjects();
+            }
+        });
         builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
+        });
         builder.getNegativeButton().setStyleSheet(StyleSheet.STYLE_RED);
 
         final OreButton positiveBtn = builder.getPositiveButton();
         updateNsValidation(input.getText().toString(), positiveBtn, alert);
-
         input.addTextChangedListener(new TextWatcher() {
-                @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
-                @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
-                @Override public void afterTextChanged(Editable s) { updateNsValidation(s.toString(), positiveBtn, alert); }
-            });
-
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(Editable s) { updateNsValidation(s.toString(), positiveBtn, alert); }
+        });
         builder.show();
     }
 
-    private void updateStudioNamespace(File projectDir, String newNs) {
-        File studioFile = new File(projectDir, "studio.json");
-        if (!studioFile.exists()) return;
-        try {
-            FileInputStream fis = new FileInputStream(studioFile);
-            byte[] data = new byte[(int) studioFile.length()];
-            fis.read(data); fis.close();
-            String content = new String(data, "UTF-8");
-
-            int start = content.indexOf("\"namespace\"");
-            if (start != -1) {
-                start = content.indexOf("\"", start + 12);
-                if (start != -1) {
-                    int end = content.indexOf("\"", start + 1);
-                    if (end != -1) {
-                        String before = content.substring(0, start + 1);
-                        String after = content.substring(end);
-                        content = before + newNs + after;
-                    }
-                }
-            } else {
-                content = content.replace("}", ",\"namespace\": \"" + newNs + "\"\n}");
-            }
-
-            FileWriter fw = new FileWriter(studioFile);
-            fw.write(content);
-            fw.close();
-            Toast.makeText(this, "命名空间已更新", Toast.LENGTH_SHORT).show();
-            loadProjects();
-        } catch (Exception e) {
-            Toast.makeText(this, "更新失败", Toast.LENGTH_SHORT).show();
-        }
-    }
-
-    // ======================== 重命名 ========================
     private void showRenameDialog(final File projectDir) {
-        String currentName = getProjectName(projectDir);
         final OreEditText input = new OreEditText(this);
         input.setHint("输入新名称");
-        input.setText(currentName);
+        input.setText(projectManager.getProjectName(projectDir));
 
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        int dialogPadding = UiUtils.dp(this, 16);
+        content.setPadding(dialogPadding, dialogPadding, dialogPadding, dialogPadding);
+        content.addView(input, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
         OreDialogBuilder builder = new OreDialogBuilder(this);
         builder.setTitle("重命名模组");
-        builder.setView(input);
+        builder.setView(content);
         builder.setPositiveButton("确定", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) {
-                    String newName = input.getText().toString().trim();
-                    if (newName.isEmpty()) { Toast.makeText(MainActivity.this, "名称不能为空", Toast.LENGTH_SHORT).show(); return; }
-                    renameProject(projectDir, newName);
-                    dialog.dismiss();
-                }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) {
+                String newName = input.getText().toString().trim();
+                if (newName.isEmpty()) { UiUtils.toast(MainActivity.this, "名称不能为空"); return; }
+                projectManager.renameProject(projectDir, newName);
+                dialog.dismiss();
+                loadProjects();
+            }
+        });
         builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
+        });
         builder.getNegativeButton().setStyleSheet(StyleSheet.STYLE_RED);
         builder.show();
     }
 
-    private void renameProject(File projectDir, String newName) {
-        try {
-            File studioFile = new File(projectDir, "studio.json");
-            if (studioFile.exists()) {
-                FileInputStream fis = new FileInputStream(studioFile);
-                byte[] data = new byte[(int) studioFile.length()];
-                fis.read(data); fis.close();
-                String content = new String(data, "UTF-8");
-                int start = content.indexOf("\"name\"");
-                if (start != -1) {
-                    start = content.indexOf("\"", start + 6);
-                    if (start != -1) {
-                        int end = content.indexOf("\"", start + 1);
-                        if (end != -1) {
-                            String before = content.substring(0, start + 1);
-                            String after = content.substring(end);
-                            content = before + newName + after;
-                        }
-                    }
-                }
-                FileWriter fw = new FileWriter(studioFile);
-                fw.write(content);
-                fw.close();
-            }
-            Toast.makeText(this, "重命名成功", Toast.LENGTH_SHORT).show();
-            loadProjects();
-        } catch (Exception e) {
-            Toast.makeText(this, "重命名失败", Toast.LENGTH_SHORT).show();
-            LogUtil.logException(e);
-        }
-    }
-
-    // ======================== 项目卡片 ========================
-    private OreCard createProjectCard(final File projectDir) {
-        OreCard card = new OreCard(this);
-        card.setPadding(16, 12, 16, 12);
-
-        LinearLayout cardLayout = new LinearLayout(this);
-        cardLayout.setOrientation(LinearLayout.HORIZONTAL);
-        cardLayout.setGravity(Gravity.CENTER_VERTICAL);
-
-        final boolean isCopy = projectDir.getParentFile() != null && projectDir.getParentFile().getName().endsWith("_back");
-
-        ImageView icon = new ImageView(this);
-        if (isCopy) {
-            icon.setImageResource(android.R.drawable.ic_menu_save);
-        } else {
-            icon.setImageResource(android.R.drawable.ic_menu_gallery);
-        }
-        icon.setColorFilter(Color.parseColor("#AAAAAA"));
-        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(80, 80);
-        iconParams.setMargins(0, 0, 16, 0);
-        icon.setLayoutParams(iconParams);
-        cardLayout.addView(icon);
-
-        LinearLayout textLayout = new LinearLayout(this);
-        textLayout.setOrientation(LinearLayout.VERTICAL);
-
-        String projectName = getProjectName(projectDir);
-        if (isCopy) projectName += " (副本)";
-
-        String copyTime = "";
-        if (isCopy) {
-            try {
-                long timestamp = Long.parseLong(projectDir.getName()) * 1000L;
-                copyTime = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(new Date(timestamp));
-            } catch (Exception ignored) {}
-        }
-
-        OreTextView nameText = new OreTextView(this);
-        nameText.setText(projectName);
-        nameText.setTextSize(16);
-        nameText.setTextColor(Color.WHITE);
-        textLayout.addView(nameText);
-
-        if (isCopy && !copyTime.isEmpty()) {
-            OreTextView timeText = new OreTextView(this);
-            timeText.setText("备份保存于: " + copyTime);
-            timeText.setTextSize(12);
-            timeText.setTextColor(Color.GRAY);
-            textLayout.addView(timeText);
-        } else {
-            String lastModified = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
-                .format(new Date(projectDir.lastModified()));
-            OreTextView timeText = new OreTextView(this);
-            timeText.setText("修改时间: " + lastModified);
-            timeText.setTextSize(12);
-            timeText.setTextColor(Color.GRAY);
-            textLayout.addView(timeText);
-        }
-
-        cardLayout.addView(textLayout);
-        card.addView(cardLayout);
-
-        card.setOnClickListener(new View.OnClickListener() {
-                @Override public void onClick(View v) {
-                    if (isCopy) showCopyOptions(projectDir);
-                    else showProjectOptions(projectDir);
-                }
-            });
-
-        return card;
-    }
-
-    // ======================== 选项菜单 ========================
-    private void showProjectOptions(final File projectDir) {
-		OreTextView msgText = new OreTextView(this);
-		msgText.setText("请选择操作");
-		msgText.setTextColor(Color.WHITE);
-		msgText.setTextSize(14);
-
-		LinearLayout msgLayout = new LinearLayout(this);
-		msgLayout.setOrientation(LinearLayout.VERTICAL);
-		msgLayout.setGravity(Gravity.CENTER);
-		int padding = (int) (16 * getResources().getDisplayMetrics().density);
-		msgLayout.setPadding(padding, padding, padding, padding);
-		msgLayout.addView(msgText);
-
-		final OreDialogBuilder builder = new OreDialogBuilder(this);
-		builder.setTitle("管理项目");
-		builder.setView(msgLayout);
-
-		// 进入
-		builder.addButton("进入", StyleSheet.STYLE_GREEN, new DialogInterface.OnClickListener() {
-				@Override
-				public void onClick(DialogInterface dialog, int which) {
-					Intent intent = new Intent(MainActivity.this, EditorActivity.class);
-					intent.putExtra("project_path", projectDir.getAbsolutePath());
-					startActivity(intent);
-					dialog.dismiss();
-				}
-			});
-
-		// 设置
-		builder.addButton("设置", StyleSheet.STYLE_WHITE, new DialogInterface.OnClickListener() {
-				@Override
-				public void onClick(DialogInterface dialog, int which) {
-					showProjectSettings(projectDir);
-					dialog.dismiss();
-				}
-			});
-
-		// 导出
-		builder.addButton("导出", StyleSheet.STYLE_PURPLE, new DialogInterface.OnClickListener() {
-				@Override
-				public void onClick(DialogInterface dialog, int which) {
-					if (!checkStoragePermission()) {
-						Toast.makeText(MainActivity.this, "需要存储权限才能导出", Toast.LENGTH_SHORT).show();
-						dialog.dismiss();
-						return;
-					}
-					startExportProject(projectDir);
-					dialog.dismiss();
-				}
-			});
-
-		// 取消
-		builder.addButton("取消", null, new DialogInterface.OnClickListener() {
-				@Override
-				public void onClick(DialogInterface dialog, int which) {
-					dialog.dismiss();
-				}
-			});
-
-		builder.show();
-	}
-	
-	private void startExportProject(File projectDir) {
-		// 保存待导出目录供 onActivityResult 使用
-		pendingExportDir = projectDir;
-
-		// 获取模组显示名称，用于生成默认文件名
-		String projectName = getProjectName(projectDir);
-		// 过滤掉文件名中不允许的字符（保留字母、数字、中文、下划线、短横线）
-		String safeName = projectName.replaceAll("[^a-zA-Z0-9_\\u4e00-\\u9fa5\\-]", "_");
-		String defaultFileName = "Cpp_AddOn_" + safeName + ".zip";
-
-		// 创建保存文件意图
-		Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-		intent.addCategory(Intent.CATEGORY_OPENABLE);
-		intent.setType("application/zip");
-		intent.putExtra(Intent.EXTRA_TITLE, defaultFileName);
-		startActivityForResult(intent, REQUEST_EXPORT_PROJECT);
-	}
-	
-	private void exportProjectToUri(File projectDir, Uri destUri) throws IOException {
-		OutputStream os = getContentResolver().openOutputStream(destUri);
-		if (os == null) throw new IOException("无法打开输出流");
-		ZipOutputStream zos = new ZipOutputStream(new BufferedOutputStream(os));
-
-		try {
-			zipDirectory(projectDir, projectDir, zos);
-		} finally {
-			zos.close();
-		}
-	}
-
-	private void zipDirectory(File rootDir, File sourceDir, ZipOutputStream zos) throws IOException {
-		File[] files = sourceDir.listFiles();
-		if (files == null) return;
-		byte[] buffer = new byte[8192];
-		for (File file : files) {
-			String entryName = rootDir.toURI().relativize(file.toURI()).getPath();
-			if (file.isDirectory()) {
-				if (!entryName.endsWith("/")) entryName += "/";
-				ZipEntry entry = new ZipEntry(entryName);
-				zos.putNextEntry(entry);
-				zos.closeEntry();
-				zipDirectory(rootDir, file, zos);
-			} else {
-				FileInputStream fis = new FileInputStream(file);
-				try {
-					ZipEntry entry = new ZipEntry(entryName);
-					zos.putNextEntry(entry);
-					int len;
-					while ((len = fis.read(buffer)) != -1) {
-						zos.write(buffer, 0, len);
-					}
-					zos.closeEntry();
-				} finally {
-					fis.close();
-				}
-			}
-		}
-	}
-
     private void showCopyOptions(final File projectDir) {
-        OreTextView msgText = new OreTextView(this);
-        msgText.setText("请选择操作");
-        msgText.setTextColor(Color.WHITE);
-        msgText.setTextSize(14);
-
-        LinearLayout msgLayout = new LinearLayout(this);
-        msgLayout.setOrientation(LinearLayout.VERTICAL);
-        msgLayout.setGravity(Gravity.CENTER);
-        int padding = (int) (16 * getResources().getDisplayMetrics().density);
-        msgLayout.setPadding(padding, padding, padding, padding);
-        msgLayout.addView(msgText);
-
         OreDialogBuilder builder = new OreDialogBuilder(this);
         builder.setTitle("副本操作");
-        builder.setView(msgLayout);
-
+        builder.setView(centeredMessage("请选择操作"));
         builder.setPositiveButton("覆盖", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) { overwriteOriginalFromBackup(projectDir); dialog.dismiss(); }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) {
+                projectManager.overwriteOriginalFromBackup(projectDir);
+                dialog.dismiss();
+                loadProjects();
+            }
+        });
         builder.getPositiveButton().setStyleSheet(StyleSheet.STYLE_RED);
-
         builder.setNegativeButton("设置", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) { showCopySettings(projectDir); }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) { showCopySettings(projectDir); }
+        });
         builder.getNegativeButton().setStyleSheet(StyleSheet.STYLE_WHITE);
-
         builder.setNeutralButton("取消", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
-            });
-
+            @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
+        });
         builder.show();
     }
 
     private void showCopySettings(final File projectDir) {
-        String displayName = getProjectName(projectDir);
-        String backupTime = "";
-        try {
-            long timestamp = Long.parseLong(projectDir.getName()) * 1000L;
-            backupTime = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(new Date(timestamp));
-        } catch (Exception ignored) {}
-
         LinearLayout contentLayout = new LinearLayout(this);
         contentLayout.setOrientation(LinearLayout.VERTICAL);
         contentLayout.setGravity(Gravity.CENTER);
-        int padding = (int) (16 * getResources().getDisplayMetrics().density);
+        int padding = UiUtils.dp(this, 16);
         contentLayout.setPadding(padding, padding, padding, padding);
 
-        OreTextView nameText = new OreTextView(this);
-        nameText.setText("副本名称: " + displayName);
-        nameText.setTextColor(Color.WHITE);
-        nameText.setTextSize(14);
-        contentLayout.addView(nameText);
-        addGap(contentLayout, 8);
-
-        OreTextView timeText = new OreTextView(this);
-        timeText.setText("备份时间: " + backupTime);
-        timeText.setTextColor(Color.GRAY);
-        timeText.setTextSize(12);
-        contentLayout.addView(timeText);
+        contentLayout.addView(infoText("副本名称: " + projectManager.getProjectName(projectDir), 14, Color.WHITE));
+        UiUtils.addGap(this, contentLayout, 8);
+        contentLayout.addView(infoText("备份时间: " + formatBackupTime(projectDir.getName()), 12, Color.GRAY));
 
         OreDialogBuilder builder = new OreDialogBuilder(this);
         builder.setTitle("副本设置");
         builder.setView(contentLayout);
-
         builder.setPositiveButton("打开文件夹", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) { openProjectFolder(projectDir); dialog.dismiss(); }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) {
+                openProjectFolder(projectDir);
+                dialog.dismiss();
+            }
+        });
         builder.getPositiveButton().setStyleSheet(StyleSheet.STYLE_GREEN);
-
         builder.setNegativeButton("删除", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) { showDeleteConfirm(projectDir); }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) { showDeleteConfirm(projectDir); }
+        });
         builder.getNegativeButton().setStyleSheet(StyleSheet.STYLE_RED);
-
         builder.setNeutralButton("取消", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
-            });
-
+            @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
+        });
         builder.show();
     }
 
-    // ======================== 导入相关 ========================
-    private void showImportDialog() {
+    private void showDeleteConfirm(final File projectDir) {
         OreTextView msgText = new OreTextView(this);
-        msgText.setText("请选择导入方式");
+        msgText.setText("你确定要删除这个模组吗？\n它会永久消失(真的很久)\n此操作不可恢复！");
         msgText.setTextColor(Color.WHITE);
         msgText.setTextSize(14);
-
         LinearLayout msgLayout = new LinearLayout(this);
         msgLayout.setOrientation(LinearLayout.VERTICAL);
-        msgLayout.setGravity(Gravity.CENTER);
-        int padding = (int) (16 * getResources().getDisplayMetrics().density);
+        msgLayout.setGravity(Gravity.CENTER_VERTICAL);
+        int padding = UiUtils.dp(this, 16);
         msgLayout.setPadding(padding, padding, padding, padding);
-        msgLayout.addView(msgText);
+        msgLayout.addView(msgText, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
 
         OreDialogBuilder builder = new OreDialogBuilder(this);
-        builder.setTitle("导入模组");
+        builder.setTitle("确认删除");
         builder.setView(msgLayout);
-
-        builder.setPositiveButton("选择ZIP导入", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) { openZipPicker(); dialog.dismiss(); }
-            });
-        builder.getPositiveButton().setStyleSheet(StyleSheet.STYLE_GREEN);
-
-        builder.setNegativeButton("选择文件夹导入", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) { openFolderPicker(); dialog.dismiss(); }
-            });
-
-        builder.setNeutralButton("取消", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
-            });
-
+        builder.setPositiveButton("删除", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                if (FileUtils.deleteRecursive(projectDir)) UiUtils.toast(MainActivity.this, "项目已删除");
+                else UiUtils.toast(MainActivity.this, "删除失败");
+                dialog.dismiss();
+                recreate();
+            }
+        });
+        builder.getPositiveButton().setStyleSheet(StyleSheet.STYLE_RED);
+        builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
+        });
         builder.show();
+    }
+
+    private void openProjectFolder(File projectDir) {
+        try {
+            Uri uri = getUriForFile(projectDir);
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(uri, "application/x-directory");
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(intent);
+        } catch (Exception e) {
+            try {
+                Uri uri = getUriForFile(projectDir);
+                Intent intent = new Intent(Intent.ACTION_VIEW);
+                intent.setDataAndType(uri, "resource/folder");
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivity(intent);
+            } catch (Exception e2) {
+                UiUtils.toast(this, "没有可用的文件管理器");
+            }
+        }
+    }
+
+    private Uri getUriForFile(File file) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            return androidx.core.content.FileProvider.getUriForFile(
+                    this, Constants.FILE_PROVIDER_AUTHORITY, file);
+        }
+        return Uri.fromFile(file);
+    }
+
+    // ==================== 导出 ====================
+
+    private void startExportProject(File projectDir) {
+        pendingExportDir = projectDir;
+        String projectName = projectManager.getProjectName(projectDir);
+        String safeName = projectName.replaceAll("[^a-zA-Z0-9_\\u4e00-\\u9fa5\\-]", "_");
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/zip");
+        intent.putExtra(Intent.EXTRA_TITLE, "Cpp_AddOn_" + safeName + ".zip");
+        startActivityForResult(intent, REQUEST_EXPORT_PROJECT);
+    }
+
+    // ==================== 导入 ====================
+
+    private void showImportDialog() {
+        OreDialogBuilder builder = new OreDialogBuilder(this);
+        builder.setTitle("导入模组");
+        builder.setView(centeredMessage("请选择导入方式"));
+        builder.setPositiveButton("选择ZIP导入", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) { openZipPicker(); dialog.dismiss(); }
+        });
+        builder.getPositiveButton().setStyleSheet(StyleSheet.STYLE_GREEN);
+        builder.setNegativeButton("选择文件夹导入", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) { openFolderPicker(); dialog.dismiss(); }
+        });
+        // 暂停“从开发者平台导入”：平台下载的是加密发布包，并非可编辑的 Nemo 源项目 ZIP。
+        // 保留实现代码供后续接入官方源项目导出接口时复用。
+        /*
+        builder.addButton("从开发者平台导入", StyleSheet.STYLE_WHITE, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                dialog.dismiss();
+                showPlatformWorkPicker();
+            }
+        });
+        */
+        builder.setNeutralButton("取消", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
+        });
+        builder.show();
+    }
+
+    /** 使用已有的开发者平台作品列表，选择作品后下载资源 ZIP 并复用 ZIP 导入流程。 */
+    private void showPlatformWorkPicker() {
+        final String cookie = settings.getString(Constants.PREFS_MC_COOKIE, "");
+        if (cookie == null || cookie.isEmpty()) {
+            UiUtils.toast(this, "请先登录开发者平台");
+            return;
+        }
+        UiUtils.runOnUiThread(new Runnable() {
+            @Override public void run() { showImportProgress(true); }
+        });
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    final List<McDevApi.WorkItem> works = McDevApi.getWorks(cookie);
+                    UiUtils.runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            showImportProgress(false);
+                            if (works == null || works.isEmpty()) {
+                                UiUtils.toast(MainActivity.this, works == null
+                                        ? "加载开发者平台作品失败" : "开发者平台暂无作品");
+                                return;
+                            }
+                            showPlatformWorkList(works, cookie);
+                        }
+                    });
+                } catch (final Exception e) {
+                    UiUtils.runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            showImportProgress(false);
+                            UiUtils.toast(MainActivity.this, "加载作品失败：" + e.getMessage());
+                        }
+                    });
+                }
+            }
+        }).start();
+    }
+
+    /** 选择列表弹窗：候选作品灰色纵向排列，列表过长时可滚动，取消固定在底部。 */
+    private void showPlatformWorkList(final List<McDevApi.WorkItem> works, final String cookie) {
+        final LinearLayout optionList = new LinearLayout(this);
+        optionList.setOrientation(LinearLayout.VERTICAL);
+        int listPadding = UiUtils.dp(this, 8);
+        optionList.setPadding(listPadding, listPadding, listPadding, listPadding);
+
+        final ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.addView(optionList);
+
+        final LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.addView(scroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        final OreDialogBuilder builder = new OreDialogBuilder(this);
+        builder.setTitle("选择开发者平台模组");
+        builder.setView(body);
+        builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
+        });
+        final android.app.Dialog[] dialogRef = new android.app.Dialog[1];
+        for (final McDevApi.WorkItem work : works) {
+            OreButton option = new OreButton(this);
+            option.setText(work.itemName == null || work.itemName.isEmpty()
+                    ? work.itemId : work.itemName);
+            option.setTextSize(14);
+            option.setSingleLine(false);
+            option.setGravity(Gravity.CENTER_VERTICAL | Gravity.LEFT);
+            option.setPadding(UiUtils.dp(this, 12), 0, UiUtils.dp(this, 12), 0);
+            option.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+            // 使用与主页普通操作按钮一致的正常高度；相邻按钮不设置 margin，避免出现缝隙。
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, UiUtils.dp(this, 40));
+            optionList.addView(option, params);
+            option.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    if (dialogRef[0] != null) dialogRef[0].dismiss();
+                    downloadPlatformWorkZip(work, cookie);
+                }
+            });
+        }
+        dialogRef[0] = builder.show();
+    }
+
+    /** 获取所选作品详情中的资源 ZIP 地址。详情字段结构可能随平台版本变化，逐层兼容解析。 */
+    private void downloadPlatformWorkZip(final McDevApi.WorkItem work, final String cookie) {
+        showImportProgress(true);
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    String detail = McDevApi.getWorkDetail(cookie, "pe", work.itemId);
+                    if (detail == null || detail.isEmpty()) throw new IOException("无法获取作品详情");
+                    JSONObject root = new JSONObject(detail);
+                    // 详情接口中 res[0].res_url 是资源标识/占位字段，真正可下载地址在 cdn_url。
+                    // 这是开发者平台详情模型 ResourceDetailRes 的字段结构，不能只搜索 res_url。
+                    String url = extractZipUrl(root.opt("res"));
+                    if (url.isEmpty()) url = extractZipUrl(root.opt("cdn_url"));
+                    if (url.isEmpty()) url = extractZipUrl(root.opt("res_url"));
+                    if (url.isEmpty()) url = extractZipUrl(root.opt("resource"));
+                    if (url.isEmpty()) url = extractZipUrl(root);
+                    if (url.isEmpty()) throw new IOException("作品没有可下载的 ZIP 资源（详情中缺少 cdn_url）");
+
+                    // 调试期间保留源 ZIP 到公共下载目录，便于直接检查实际目录结构。
+                    File targetDir = new File(Constants.DOWNLOAD_DIR);
+                    if (!targetDir.exists() && !targetDir.mkdirs()) throw new IOException("无法创建下载目录");
+                    String safeName = sanitizeFileName(work.itemName);
+                    final File zipFile = new File(targetDir,
+                            "platform_" + work.itemId + "_" + safeName + "_" + System.currentTimeMillis() + ".zip");
+                    downloadToFile(url, cookie, zipFile);
+                    if (isJsonErrorFile(zipFile)) {
+                        zipFile.delete();
+                        throw new IOException("平台返回登录错误，请重新登录");
+                    }
+                    final Uri zipUri = androidx.core.content.FileProvider.getUriForFile(
+                            MainActivity.this, Constants.FILE_PROVIDER_AUTHORITY, zipFile);
+                    UiUtils.runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            showImportProgress(false);
+                            importFromDownloadedZip(zipUri, zipFile);
+                        }
+                    });
+                } catch (final Exception e) {
+                    UiUtils.runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            showImportProgress(false);
+                            UiUtils.toast(MainActivity.this, "平台模组导入失败：" + e.getMessage());
+                        }
+                    });
+                }
+            }
+        }).start();
+    }
+
+    private void importFromDownloadedZip(final Uri zipUri, final File zipFile) {
+        showImportProgress(true);
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    projectManager.importFromZip(zipUri, new ProjectManager.ProgressCallback() {
+                        @Override public void onProgress(int percent) { updateProgress(percent); }
+                    });
+                    UiUtils.toast(MainActivity.this, "开发者平台模组导入成功");
+                    refreshProjects();
+                } catch (final Exception e) {
+                    LogUtil.logException(e);
+                    UiUtils.toast(MainActivity.this, "ZIP 导入失败：" + e.getMessage());
+                } finally {
+                    // 源 ZIP 按调试要求保留在 McMod/Download，不在导入结束时删除。
+                    hideImportProgress();
+                }
+            }
+        }).start();
+    }
+
+    private String sanitizeFileName(String name) {
+        if (name == null || name.trim().isEmpty()) return "unnamed";
+        String safe = name.trim().replaceAll("[\\\\/:*?\\\"<>|\\r\\n]", "_");
+        return safe.length() > 80 ? safe.substring(0, 80) : safe;
+    }
+
+    private String extractZipUrl(Object value) {
+        if (value == null || value == JSONObject.NULL) return "";
+        if (value instanceof JSONArray) {
+            JSONArray array = (JSONArray) value;
+            for (int i = 0; i < array.length(); i++) {
+                String result = extractZipUrl(array.opt(i));
+                if (!result.isEmpty()) return result;
+            }
+            return "";
+        }
+        if (value instanceof JSONObject) {
+            JSONObject object = (JSONObject) value;
+            String[] preferred = {"cdn_url", "download_url", "zip_url", "file_url", "resource_url", "url"};
+            for (String key : preferred) {
+                String result = extractZipUrl(object.opt(key));
+                if (!result.isEmpty()) return result;
+            }
+            String[] nested = {"body", "data", "result", "file", "resource", "res_url"};
+            for (String key : nested) {
+                String result = extractZipUrl(object.opt(key));
+                if (!result.isEmpty()) return result;
+            }
+            return "";
+        }
+        String raw = String.valueOf(value).trim().replace("\\/", "/");
+        if (raw.startsWith("http://") || raw.startsWith("https://")) {
+            // cdn_url 可能是无扩展名的签名下载地址，不能仅靠 .zip 后缀判断。
+            // 此方法只从资源字段（cdn_url/res 等）调用，因此直接保留 HTTPS 地址。
+            return raw;
+        }
+        try { return extractZipUrl(new JSONObject(raw)); } catch (Exception ignored) { }
+        try { return extractZipUrl(new JSONArray(raw)); } catch (Exception ignored) { }
+        return "";
+    }
+
+    private void downloadToFile(String url, String cookie, File output) throws IOException {
+        java.net.HttpURLConnection conn = null;
+        java.io.InputStream input = null;
+        java.io.FileOutputStream outputStream = null;
+        try {
+            conn = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(20000);
+            conn.setReadTimeout(30000);
+            conn.setRequestProperty("User-Agent", "NemoModStudio");
+            if (cookie != null && !cookie.isEmpty()) conn.setRequestProperty("Cookie", cookie);
+            conn.connect();
+            int code = conn.getResponseCode();
+            if (code < 200 || code >= 300) throw new IOException("HTTP " + code);
+            int total = conn.getContentLength();
+            input = conn.getInputStream();
+            outputStream = new java.io.FileOutputStream(output);
+            byte[] buffer = new byte[8192];
+            int length, done = 0;
+            while ((length = input.read(buffer)) != -1) {
+                outputStream.write(buffer, 0, length);
+                done += length;
+                if (total > 0) updateProgress((int) (done * 100L / total));
+            }
+            outputStream.flush();
+        } finally {
+            try { if (input != null) input.close(); } catch (Exception ignored) { }
+            try { if (outputStream != null) outputStream.close(); } catch (Exception ignored) { }
+            if (conn != null) conn.disconnect();
+        }
     }
 
     private void openFolderPicker() {
@@ -1516,197 +1484,117 @@ public class MainActivity extends Activity {
     private void importFromFolder(final Uri treeUri) {
         showImportProgress(true);
         new Thread(new Runnable() {
-                @Override public void run() {
-                    try {
-                        final DocumentFile rootDoc = DocumentFile.fromTreeUri(MainActivity.this, treeUri);
-                        if (rootDoc == null) { showToast("无法读取文件夹"); return; }
-
-                        boolean[] valid = {false, false};
-                        DocumentFile[] children = rootDoc.listFiles();
-                        if (children != null) {
-                            for (DocumentFile child : children) {
-                                String name = child.getName();
-                                if (name != null) {
-                                    String lower = name.toLowerCase();
-                                    if (lower.startsWith("behavior_pack_") || lower.startsWith("behaviour_pack_")) valid[0] = true;
-                                    else if (lower.startsWith("resource_pack_")) valid[1] = true;
-                                }
-                            }
-                        }
-                        if (!valid[0] || !valid[1]) { showToast("必须包含行为包和资源包文件夹"); return; }
-
-                        String tempUUID = readStudioId(rootDoc);
-                        if (tempUUID == null || tempUUID.isEmpty()) tempUUID = UUID.randomUUID().toString().replace("-", "");
-                        final String projectUUID = tempUUID;
-
-                        File projectDir = new File(MOD_FOLDER_PATH, projectUUID);
-                        File targetDir = null;
-                        if (projectDir.exists()) {
-                            final Object lock = new Object();
-                            final int[] choice = {0};
-                            showConflictAndWait(projectUUID, choice, lock);
-                            if (choice[0] == 3) { showToast("已取消导入"); return; }
-                            else if (choice[0] == 2) {
-                                File backupContainer = new File(MOD_FOLDER_PATH, projectUUID + "_back");
-                                backupContainer.mkdirs();
-                                targetDir = new File(backupContainer, String.valueOf(System.currentTimeMillis() / 1000));
-                            } else {
-                                deleteRecursive(projectDir);
-                                targetDir = new File(MOD_FOLDER_PATH, projectUUID);
-                            }
-                        } else {
-                            targetDir = projectDir;
-                        }
-                        targetDir.mkdirs();
-
-                        copyDocumentTreeWithProgress(rootDoc, targetDir);
-                        normalizeImportedProject(targetDir);
-                        handleImportStudioJson(targetDir, targetDir.getName());
-
-                        showToast("导入成功");
-                        refreshProjects();
-                    } catch (final Exception e) {
-                        showToast("导入失败");
-                        LogUtil.logException(e);
-                    } finally {
-                        hideImportProgress();
-                    }
+            @Override public void run() {
+                try {
+                    projectManager.importFromFolder(treeUri);
+                    UiUtils.toast(MainActivity.this, "导入成功");
+                    refreshProjects();
+                } catch (final Exception e) {
+                    LogUtil.logException(e);
+                    UiUtils.toast(MainActivity.this, "导入失败: " + e.getMessage());
+                } finally {
+                    hideImportProgress();
                 }
-            }).start();
+            }
+        }).start();
     }
 
     private void importFromZip(final Uri zipUri) {
         showImportProgress(true);
         new Thread(new Runnable() {
-                @Override public void run() {
-                    try {
-                        int totalFiles = 0;
-                        InputStream countIs = getContentResolver().openInputStream(zipUri);
-                        ZipInputStream countZis = new ZipInputStream(new BufferedInputStream(countIs));
-                        ZipEntry countEntry;
-                        while ((countEntry = countZis.getNextEntry()) != null) {
-                            if (!countEntry.isDirectory()) totalFiles++;
-                            countZis.closeEntry();
-                        }
-                        countZis.close(); countIs.close();
-
-                        InputStream is = getContentResolver().openInputStream(zipUri);
-                        if (is == null) { showToast("无法读取文件"); return; }
-
-                        final File tempDir = new File(MOD_FOLDER_PATH, "temp_" + System.currentTimeMillis());
-                        tempDir.mkdirs();
-
-                        ZipInputStream zis = new ZipInputStream(new BufferedInputStream(is));
-                        ZipEntry entry;
-                        int processedFiles = 0;
-                        while ((entry = zis.getNextEntry()) != null) {
-                            String name = entry.getName();
-                            File outFile = new File(tempDir, name);
-                            if (entry.isDirectory()) {
-                                outFile.mkdirs();
-                            } else {
-                                File parent = outFile.getParentFile();
-                                if (parent != null && !parent.exists()) parent.mkdirs();
-                                FileOutputStream fos = new FileOutputStream(outFile);
-                                byte[] buffer = new byte[8192];
-                                int len;
-                                while ((len = zis.read(buffer)) != -1) { fos.write(buffer, 0, len); try { Thread.sleep(1); } catch (InterruptedException e) {} }
-                                fos.close();
-                                processedFiles++;
-                                final int progress = totalFiles > 0 ? (processedFiles * 100 / totalFiles) : 0;
-                                updateProgress(progress);
-                            }
-                            zis.closeEntry();
-                            try { Thread.sleep(2); } catch (InterruptedException e) {}
-                        }
-                        zis.close(); is.close();
-
-                        String tempUUID = null;
-                        File studioJsonFile = new File(tempDir, "studio.json");
-                        if (studioJsonFile.exists()) {
-                            try {
-                                FileInputStream fis = new FileInputStream(studioJsonFile);
-                                byte[] data = new byte[(int) studioJsonFile.length()];
-                                fis.read(data); fis.close();
-                                String content = new String(data, "UTF-8");
-                                int start = content.indexOf("\"Id\"");
-                                if (start == -1) start = content.indexOf("\"id\"");
-                                if (start != -1) {
-                                    int colon = content.indexOf(":", start);
-                                    if (colon != -1) {
-                                        int q1 = content.indexOf("\"", colon);
-                                        if (q1 != -1) {
-                                            int q2 = content.indexOf("\"", q1 + 1);
-                                            if (q2 != -1) tempUUID = content.substring(q1 + 1, q2);
-                                        }
-                                    }
-                                }
-                            } catch (Exception ignored) {}
-                        }
-                        if (tempUUID == null || tempUUID.isEmpty()) tempUUID = UUID.randomUUID().toString().replace("-", "");
-                        final String projectUUID = tempUUID;
-
-                        File projectDir = new File(MOD_FOLDER_PATH, projectUUID);
-                        File targetDir = null;
-                        if (projectDir.exists()) {
-                            final Object lock = new Object();
-                            final int[] choice = {0};
-                            showConflictAndWait(projectUUID, choice, lock);
-                            if (choice[0] == 3) { deleteRecursive(tempDir); showToast("已取消导入"); return; }
-                            else if (choice[0] == 2) {
-                                File backupContainer = new File(MOD_FOLDER_PATH, projectUUID + "_back");
-                                backupContainer.mkdirs();
-                                targetDir = new File(backupContainer, String.valueOf(System.currentTimeMillis() / 1000));
-                            } else {
-                                deleteRecursive(projectDir);
-                                targetDir = new File(MOD_FOLDER_PATH, projectUUID);
-                            }
-                        } else {
-                            targetDir = projectDir;
-                        }
-
-                        organizeZipImportedFiles(tempDir, targetDir);
-                        deleteRecursive(tempDir);
-                        handleImportStudioJson(targetDir, targetDir.getName());
-
-                        showToast("导入成功");
-                        refreshProjects();
-                    } catch (final Exception e) {
-                        cleanTempFolders();
-                        showToast("导入失败");
-                        LogUtil.logException(e);
-                    } finally {
-                        hideImportProgress();
-                    }
+            @Override public void run() {
+                try {
+                    projectManager.importFromZip(zipUri, new ProjectManager.ProgressCallback() {
+                        @Override public void onProgress(int percent) { updateProgress(percent); }
+                    });
+                    UiUtils.toast(MainActivity.this, "导入成功");
+                    refreshProjects();
+                } catch (final Exception e) {
+                    LogUtil.logException(e);
+                    UiUtils.toast(MainActivity.this, "导入失败: " + e.getMessage());
+                } finally {
+                    hideImportProgress();
                 }
-            }).start();
+            }
+        }).start();
     }
 
-    private void showConflictAndWait(final String projectUUID, final int[] choice, final Object lock) {
-        MainActivity.this.runOnUiThread(new Runnable() { public void run() {
-                    showImportConflictDialog(projectUUID, new ImportConflictCallback() {
-                            @Override public void onChoice(int c) { synchronized (lock) { choice[0] = c; lock.notify(); } }
-                        });
-                }});
-        synchronized (lock) { try { lock.wait(); } catch (InterruptedException e) {} }
+    private void showImportProgress(boolean show) {
+        UiUtils.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                importProgressBar.setVisibility(show ? View.VISIBLE : View.GONE);
+                if (show) importProgressBar.setProgress(0);
+            }
+        });
+    }
+
+    private void hideImportProgress() {
+        showImportProgress(false);
     }
 
     private void updateProgress(final int progress) {
-        MainActivity.this.runOnUiThread(new Runnable() { public void run() {
-                    if (importProgressBar != null) importProgressBar.setProgress(progress);
-                }});
-    }
-
-    private void showToast(final String msg) {
-        MainActivity.this.runOnUiThread(new Runnable() { public void run() {
-                    Toast.makeText(MainActivity.this, msg, Toast.LENGTH_SHORT).show();
-                }});
+        UiUtils.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                if (importProgressBar != null) importProgressBar.setProgress(progress);
+            }
+        });
     }
 
     private void refreshProjects() {
-        MainActivity.this.runOnUiThread(new Runnable() { public void run() {
-                    loadProjects();
-                }});
+        UiUtils.runOnUiThread(new Runnable() {
+            @Override public void run() { loadProjects(); }
+        });
+    }
+
+    // ==================== ProjectManager UI 回调 ====================
+
+    private class ImportUiImpl implements ProjectManager.ImportUi {
+        @Override
+        public int askConflict(String projectId) {
+            final Object lock = new Object();
+            final int[] choice = {0};
+            UiUtils.runOnUiThread(new Runnable() {
+                @Override public void run() {
+                    showImportConflictDialog(projectId, new ImportConflictCallback() {
+                        @Override public void onChoice(int c) {
+                            synchronized (lock) { choice[0] = c; lock.notify(); }
+                        }
+                    });
+                }
+            });
+            synchronized (lock) {
+                try { lock.wait(); } catch (InterruptedException ignored) {}
+            }
+            return choice[0];
+        }
+
+        @Override
+        public String[] askNameAndNamespace() {
+            final Object lock = new Object();
+            final String[] result = {null, null};
+            UiUtils.runOnUiThread(new Runnable() {
+                @Override public void run() {
+                    showNameAndNamespaceDialog(new NameNamespaceCallback() {
+                        @Override public void onResult(String name, String namespace) {
+                            synchronized (lock) { result[0] = name; result[1] = namespace; lock.notify(); }
+                        }
+                    });
+                }
+            });
+            synchronized (lock) {
+                try { lock.wait(); } catch (InterruptedException ignored) {}
+            }
+            if (result[0] == null) return null;
+            return result;
+        }
+    }
+
+    private interface ImportConflictCallback {
+        void onChoice(int choice);
+    }
+
+    private interface NameNamespaceCallback {
+        void onResult(String name, String namespace);
     }
 
     private void showImportConflictDialog(String projectName, final ImportConflictCallback callback) {
@@ -1714,116 +1602,30 @@ public class MainActivity extends Activity {
         msgText.setText("已存在同名项目 \"" + projectName + "\"\n请选择操作");
         msgText.setTextColor(Color.WHITE);
         msgText.setTextSize(14);
-
         LinearLayout msgLayout = new LinearLayout(this);
         msgLayout.setOrientation(LinearLayout.VERTICAL);
         msgLayout.setGravity(Gravity.CENTER);
-        int padding = (int) (16 * getResources().getDisplayMetrics().density);
+        int padding = UiUtils.dp(this, 16);
         msgLayout.setPadding(padding, padding, padding, padding);
-        msgLayout.addView(msgText);
+        msgLayout.addView(msgText, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
 
         OreDialogBuilder builder = new OreDialogBuilder(this);
         builder.setTitle("项目冲突");
         builder.setView(msgLayout);
-
         builder.setPositiveButton("覆盖", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) { callback.onChoice(1); dialog.dismiss(); }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) { callback.onChoice(1); dialog.dismiss(); }
+        });
         builder.getPositiveButton().setStyleSheet(StyleSheet.STYLE_RED);
-
         builder.setNegativeButton("添加副本", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) { callback.onChoice(2); dialog.dismiss(); }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) { callback.onChoice(2); dialog.dismiss(); }
+        });
         builder.getNegativeButton().setStyleSheet(StyleSheet.STYLE_GREEN);
-
         builder.setNeutralButton("取消", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) { callback.onChoice(3); dialog.dismiss(); }
-            });
-
+            @Override public void onClick(DialogInterface dialog, int which) { callback.onChoice(3); dialog.dismiss(); }
+        });
         builder.show();
-    }
-
-    private String readStudioId(DocumentFile rootDoc) {
-        DocumentFile studioFile = rootDoc.findFile("studio.json");
-        if (studioFile == null || !studioFile.exists() || studioFile.length() <= 0) return null;
-        try {
-            InputStream is = getContentResolver().openInputStream(studioFile.getUri());
-            byte[] data = new byte[(int) studioFile.length()];
-            is.read(data); is.close();
-            String content = new String(data, "UTF-8");
-            int start = content.indexOf("\"Id\"");
-            if (start == -1) start = content.indexOf("\"id\"");
-            if (start != -1) {
-                start = content.indexOf("\"", start + 4);
-                if (start != -1) {
-                    int end = content.indexOf("\"", start + 1);
-                    if (end != -1) return content.substring(start + 1, end);
-                }
-            }
-        } catch (Exception ignored) {}
-        return null;
-    }
-
-    private void handleImportStudioJson(final File targetDir, final String projectId) {
-        File existingStudio = new File(targetDir, "studio.json");
-        String importName = "未知模组";
-        String importNamespace = "test";
-
-        if (existingStudio.exists()) {
-            try {
-                FileInputStream fis = new FileInputStream(existingStudio);
-                byte[] data = new byte[(int) existingStudio.length()];
-                fis.read(data); fis.close();
-                String content = new String(data, "UTF-8");
-
-                int nameStart = content.indexOf("\"EditName\"");
-                if (nameStart == -1) nameStart = content.indexOf("\"name\"");
-                if (nameStart != -1) {
-                    int colon = content.indexOf(":", nameStart);
-                    if (colon != -1) {
-                        int q1 = content.indexOf("\"", colon);
-                        if (q1 != -1) {
-                            int q2 = content.indexOf("\"", q1 + 1);
-                            if (q2 != -1) importName = content.substring(q1 + 1, q2);
-                        }
-                    }
-                }
-
-                int nsStart = content.indexOf("\"NameSpace\"");
-                if (nsStart == -1) nsStart = content.indexOf("\"namespace\"");
-                if (nsStart != -1) {
-                    int colon = content.indexOf(":", nsStart);
-                    if (colon != -1) {
-                        int q1 = content.indexOf("\"", colon);
-                        if (q1 != -1) {
-                            int q2 = content.indexOf("\"", q1 + 1);
-                            if (q2 != -1) { importNamespace = content.substring(q1 + 1, q2); if (importNamespace.isEmpty()) importNamespace = "test"; }
-                        }
-                    }
-                }
-            } catch (Exception ignored) {}
-
-            writeStringToFile(existingStudio,
-                              "{\n  \"id\": \"" + projectId + "\",\n  \"name\": \"" + importName + "\",\n  \"namespace\": \"" + importNamespace + "\"\n}");
-        } else {
-            final Object lock = new Object();
-            final String[] result = {null, null};
-            MainActivity.this.runOnUiThread(new Runnable() { public void run() {
-                        showNameAndNamespaceDialog(new NameNamespaceCallback() {
-                                @Override public void onResult(String name, String namespace) {
-                                    synchronized (lock) { result[0] = name; result[1] = namespace; lock.notify(); }
-                                }
-                            });
-                    }});
-            synchronized (lock) { try { lock.wait(); } catch (InterruptedException e) {} }
-            if (result[0] == null) return;
-            writeStringToFile(new File(targetDir, "studio.json"),
-                              "{\n  \"id\": \"" + projectId + "\",\n  \"name\": \"" + result[0] + "\",\n  \"namespace\": \"" + result[1] + "\"\n}");
-        }
-    }
-
-    private interface NameNamespaceCallback {
-        void onResult(String name, String namespace);
     }
 
     private void showNameAndNamespaceDialog(final NameNamespaceCallback callback) {
@@ -1839,6 +1641,8 @@ public class MainActivity extends Activity {
 
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
+        int dialogPadding = UiUtils.dp(this, 16);
+        layout.setPadding(dialogPadding, dialogPadding, dialogPadding, dialogPadding);
         layout.addView(inputName);
         layout.addView(inputNs);
         layout.addView(nsAlert);
@@ -1846,730 +1650,665 @@ public class MainActivity extends Activity {
         OreDialogBuilder builder = new OreDialogBuilder(this);
         builder.setTitle("设置模组信息");
         builder.setView(layout);
-
         builder.setPositiveButton("确定", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) {
-                    String name = inputName.getText().toString().trim();
-                    String ns = inputNs.getText().toString().trim();
-                    if (name.isEmpty()) name = "未命名模组";
-                    if (ns.isEmpty()) ns = "test";
-                    if (!isValidNamespace(ns)) { Toast.makeText(MainActivity.this, "命名空间格式错误", Toast.LENGTH_LONG).show(); return; }
-                    callback.onResult(name, ns);
-                    dialog.dismiss();
-                }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) {
+                String name = inputName.getText().toString().trim();
+                String ns = inputNs.getText().toString().trim();
+                if (name.isEmpty()) name = "未命名模组";
+                if (ns.isEmpty()) ns = "test";
+                if (!isValidNamespace(ns)) { UiUtils.toast(MainActivity.this, "命名空间格式错误"); return; }
+                callback.onResult(name, ns);
+                dialog.dismiss();
+            }
+        });
         builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) { callback.onResult(null, null); dialog.dismiss(); }
-            });
+            @Override public void onClick(DialogInterface dialog, int which) {
+                callback.onResult(null, null);
+                dialog.dismiss();
+            }
+        });
         builder.getNegativeButton().setStyleSheet(StyleSheet.STYLE_RED);
-
         final OreButton positiveBtn = builder.getPositiveButton();
         updateNsValidation(inputNs.getText().toString(), positiveBtn, nsAlert);
-
         inputNs.addTextChangedListener(new TextWatcher() {
-                @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
-                @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
-                @Override public void afterTextChanged(Editable s) { updateNsValidation(s.toString(), positiveBtn, nsAlert); }
-            });
-
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(Editable s) { updateNsValidation(s.toString(), positiveBtn, nsAlert); }
+        });
         builder.show();
     }
 
-    // ======================== 备份 / 删除 / 通用 ========================
-    private void showDeleteConfirm(final File projectDir) {
-        OreTextView msgText = new OreTextView(this);
-        msgText.setText("你确定要删除这个模组吗？\n它会永久消失(真的很久)\n此操作不可恢复！");
-        msgText.setTextColor(Color.WHITE);
-        msgText.setTextSize(14);
+    // ==================== 管理页（基于 MCDev API） ====================
 
-        LinearLayout msgLayout = new LinearLayout(this);
-        msgLayout.setOrientation(LinearLayout.VERTICAL);
-        msgLayout.setGravity(Gravity.CENTER);
-        int padding = (int) (16 * getResources().getDisplayMetrics().density);
-        msgLayout.setPadding(padding, padding, padding, padding);
-        msgLayout.addView(msgText);
+    private boolean managerInitialized;
+    private ScrollView managerScroll;
+    private LinearLayout managerListContainer;
+    private LinearLayout managerLoginBox;
+    private OreEditText emailInput;
+    private OreEditText pwdInput;
+    private OreTextView managerStatusText;
+    private OreButton addWorkBtn;
+
+    private void setupManagerPage() {
+        if (managerInitialized) return;
+        managerInitialized = true;
+        downloadProgressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        downloadProgressBar.setMax(100);
+        downloadProgressBar.setProgress(0);
+        downloadProgressBar.setVisibility(View.GONE);
+        downloadProgressBar.setProgressTintList(ColorStateList.valueOf(Color.WHITE));
+        managerContainer.addView(downloadProgressBar, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                (int) (6 * getResources().getDisplayMetrics().density)));
+        downloadTargetDir = new File(Constants.DOWNLOAD_DIR);
+        if (!downloadTargetDir.exists()) downloadTargetDir.mkdirs();
+
+        // 顶部标题
+        OreTextView title = new OreTextView(this);
+        title.setText("开发者内容管理");
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(18);
+        managerContainer.addView(title);
+        UiUtils.addGap(this, managerContainer, 4);
+
+        // 登录状态
+        managerStatusText = new OreTextView(this);
+        managerStatusText.setTextColor(Color.parseColor("#AAAAAA"));
+        managerStatusText.setTextSize(12);
+        managerContainer.addView(managerStatusText);
+        UiUtils.addGap(this, managerContainer, 8);
+
+        // 登录卡片（默认隐藏）
+        managerLoginBox = buildLoginBox();
+        managerContainer.addView(managerLoginBox);
+        // 登录后入口：新建作品与收件箱并列。
+        LinearLayout workEntryRow = new LinearLayout(this);
+        workEntryRow.setOrientation(LinearLayout.HORIZONTAL);
+        addWorkBtn = new OreButton(this);
+        addWorkBtn.setText("＋ 新增作品"); addWorkBtn.setStyleSheet(StyleSheet.STYLE_GREEN); addWorkBtn.setVisibility(View.GONE);
+        addWorkBtn.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { showAddWorkDialog(); } });
+        workEntryRow.addView(addWorkBtn, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        OreButton mailboxBtn = new OreButton(this);
+        mailboxBtn.setText("收件箱"); mailboxBtn.setStyleSheet(StyleSheet.STYLE_DARK_GRAY); mailboxBtn.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { startActivity(new Intent(MainActivity.this, MailboxActivity.class)); } });
+        workEntryRow.addView(mailboxBtn, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        managerContainer.addView(workEntryRow);
+        // 作品列表（滚动）
+        managerScroll = new ScrollView(this);
+        managerListContainer = new LinearLayout(this);
+        managerListContainer.setOrientation(LinearLayout.VERTICAL);
+        managerListContainer.setPadding(0, 8, 0, 8);
+        managerScroll.addView(managerListContainer);
+        managerContainer.addView(managerScroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        // 底部按钮行：刷新 / 浏览器打开 / MCDevManager
+        LinearLayout btnRow = new LinearLayout(this);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        btnRow.setGravity(Gravity.CENTER);
+        btnRow.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        OreButton refreshBtn = new OreButton(this);
+        refreshBtn.setText("刷新");
+        refreshBtn.setStyleSheet(StyleSheet.STYLE_WHITE);
+        refreshBtn.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        refreshBtn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { refreshWorks(); }
+        });
+        btnRow.addView(refreshBtn);
+        OreButton openBtn = new OreButton(this);
+        openBtn.setText("浏览器打开");
+        openBtn.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+        openBtn.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        openBtn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { openBrowser(Constants.MC_DEV_WEB); }
+        });
+        btnRow.addView(openBtn);
+        OreButton managerBtn = new OreButton(this);
+        managerBtn.setText("MCDevManager");
+        managerBtn.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+        managerBtn.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        managerBtn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                // 优先打开已安装的 MCDevManager App，未安装则跳转开源页面
+                try {
+                    Intent launch = getPackageManager().getLaunchIntentForPackage("com.lemon.mcdevmanagermp");
+                    if (launch != null) {
+                        startActivity(launch);
+                    } else {
+                        openBrowser(Constants.MC_DEV_MANAGER_PAGE);
+                    }
+                } catch (Exception e) {
+                    openBrowser(Constants.MC_DEV_MANAGER_PAGE);
+                }
+            }
+        });
+        btnRow.addView(managerBtn);
+        managerContainer.addView(btnRow);
+
+        refreshLoginState();
+    }
+
+    private LinearLayout buildLoginBox() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(0, 8, 0, 8);
+
+        OreTextView tip = new OreTextView(this);
+        tip.setText("登录网易开发者账号（用于查询/管理你的作品）");
+        tip.setTextColor(Color.parseColor("#AAAAAA"));
+        tip.setTextSize(12);
+        box.addView(tip);
+        UiUtils.addGap(this, box, 8);
+
+        emailInput = new OreEditText(this);
+        emailInput.setHint("网易邮箱");
+        emailInput.setTextSize(14);
+        emailInput.setTextColor(Color.WHITE);
+        box.addView(emailInput);
+        UiUtils.addGap(this, box, 6);
+
+        pwdInput = new OreEditText(this);
+        pwdInput.setHint("密码");
+        pwdInput.setTextSize(14);
+        pwdInput.setTextColor(Color.WHITE);
+        pwdInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        box.addView(pwdInput);
+        UiUtils.addGap(this, box, 8);
+
+        LinearLayout btnRow = new LinearLayout(this);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        btnRow.setGravity(Gravity.CENTER);
+        OreButton loginBtn = new OreButton(this);
+        loginBtn.setText("登录");
+        loginBtn.setStyleSheet(StyleSheet.STYLE_WHITE);
+        loginBtn.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        loginBtn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { doLogin(); }
+        });
+        btnRow.addView(loginBtn);
+        OreButton cookieBtn = new OreButton(this);
+        cookieBtn.setText("粘贴Cookie");
+        cookieBtn.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+        cookieBtn.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        cookieBtn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { doCookieLogin(); }
+        });
+        btnRow.addView(cookieBtn);
+        OreButton logoutBtn = new OreButton(this);
+        logoutBtn.setText("退出登录");
+        logoutBtn.setStyleSheet(StyleSheet.STYLE_RED);
+        logoutBtn.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        logoutBtn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { doLogout(); }
+        });
+        btnRow.addView(logoutBtn);
+        box.addView(btnRow);
+        return box;
+    }
+
+    private void refreshLoginState() {
+        final String cookie = settings.getString(Constants.PREFS_MC_COOKIE, "");
+        final String email = settings.getString(Constants.PREFS_MC_EMAIL, "");
+        if (cookie == null || cookie.isEmpty()) {
+            managerStatusText.setText("未登录");
+            managerLoginBox.setVisibility(View.VISIBLE);
+            if (addWorkBtn != null) addWorkBtn.setVisibility(View.GONE);
+            managerListContainer.removeAllViews();
+            addEmptyTip("登录后查看你的作品");
+        } else {
+            managerLoginBox.setVisibility(View.GONE);
+            if (addWorkBtn != null) addWorkBtn.setVisibility(View.VISIBLE);
+            managerStatusText.setText("已登录" + (email != null && !email.isEmpty() ? "：" + email : ""));
+            refreshWorks();
+        }
+    }
+
+    private void doLogin() {
+        final String email = emailInput.getText().toString().trim();
+        final String pwd = pwdInput.getText().toString();
+        if (email.isEmpty() || pwd.isEmpty()) {
+            UiUtils.toast(this, "请输入邮箱和密码");
+            return;
+        }
+        managerStatusText.setText("登录中...（可能需要几秒）");
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final String cookie = McDevApi.login(email, pwd);
+                UiUtils.runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (cookie != null && !cookie.isEmpty()) {
+                            settings.putString(Constants.PREFS_MC_COOKIE, cookie);
+                                    settings.putString(Constants.PREFS_MC_EMAIL, email);
+                            UiUtils.toast(MainActivity.this, "登录成功");
+                            refreshLoginState();
+                        } else {
+                            managerStatusText.setText("登录失败，请检查账号密码或改用粘贴Cookie");
+                        }
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private void doCookieLogin() {
+        final OreEditText input = new OreEditText(this);
+        input.setHint("粘贴浏览器中的 Cookie（含 NTES_SESS=...）");
+        input.setTextSize(13);
+        input.setTextColor(Color.WHITE);
+        new OreDialogBuilder(this)
+                .setTitle("粘贴 Cookie")
+                .setMessage("浏览器登录 mcdev.webapp.163.com 后，按 F12 复制 Cookie 粘贴到这里")
+                .setView(input)
+                .setNegativeButton("取消", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) { d.dismiss(); }
+                })
+                .setPositiveButton("确定", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) {
+                        final String cookie = input.getText().toString().trim();
+                        if (cookie.isEmpty()) { UiUtils.toast(MainActivity.this, "Cookie 不能为空"); return; }
+                        managerStatusText.setText("校验中...");
+                        new Thread(new Runnable() {
+                            @Override public void run() {
+                                final boolean ok = McDevApi.validateCookie(cookie);
+                                UiUtils.runOnUiThread(new Runnable() {
+                                    @Override public void run() {
+                                        if (ok) {
+                                            settings.putString(Constants.PREFS_MC_COOKIE, cookie);
+                                                    settings.putString(Constants.PREFS_MC_EMAIL, "Cookie 登录");
+                                            UiUtils.toast(MainActivity.this, "Cookie 有效，已登录");
+                                            refreshLoginState();
+                                        } else {
+                                            managerStatusText.setText("Cookie 无效或已过期");
+                                        }
+                                    }
+                                });
+                            }
+                        }).start();
+                    }
+                })
+                .show();
+    }
+
+    private void doLogout() {
+        settings.remove(Constants.PREFS_MC_COOKIE);
+        settings.remove(Constants.PREFS_MC_EMAIL);
+        UiUtils.toast(this, "已退出登录");
+        refreshLoginState();
+    }
+
+    private void refreshWorks() {
+        final String cookie = settings.getString(Constants.PREFS_MC_COOKIE, "");
+        if (cookie == null || cookie.isEmpty()) return;
+        managerStatusText.setText("加载作品中...");
+        new Thread(new Runnable() {
+            @Override public void run() {
+                java.util.List<McDevApi.WorkItem> loadedWorks = null;
+                String loadError = null;
+                try {
+                    loadedWorks = McDevApi.getWorks(cookie);
+                } catch (Exception e) {
+                    loadError = e.getMessage();
+                }
+                final java.util.List<McDevApi.WorkItem> works = loadedWorks;
+                final String error = loadError;
+                UiUtils.runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (error != null) {
+                            // getWorks 明确报告 Cookie 失效时，清除本地登录状态并恢复登录界面。
+                            if (error.contains("Cookie已失效")) {
+                                settings.remove(Constants.PREFS_MC_COOKIE);
+                                settings.remove(Constants.PREFS_MC_EMAIL);
+                                refreshLoginState();
+                                managerStatusText.setText("Cookie 已失效，请重新登录");
+                            } else {
+                                managerStatusText.setText(error.isEmpty() ? "加载作品失败" : error);
+                            }
+                            return;
+                        }
+                        managerStatusText.setText("共 " + works.size() + " 个作品");
+                        renderWorks(works);
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private void renderWorks(final java.util.List<McDevApi.WorkItem> works) {
+        managerListContainer.removeAllViews();
+        if (works.isEmpty()) {
+            addEmptyTip("暂无作品");
+            return;
+        }
+        for (final McDevApi.WorkItem item : works) {
+            OreCard card = new OreCard(this);
+            // 外层仅作为视觉容器：不接受点击，也不显示任何锁定/禁用贴图；
+            // 内部操作按钮保持各自可点击。
+            card.setClickable(false);
+            card.setLongClickable(false);
+            card.setFocusable(false);
+            // OreCard 默认背景含 pressed 状态；换成静态背景，彻底去掉外层按下反馈。
+            GradientDrawable staticCardBg = new GradientDrawable();
+            staticCardBg.setColor(Color.parseColor("#4A4A4A"));
+            staticCardBg.setStroke(UiUtils.dp(this, 1), Color.parseColor("#777777"));
+            card.setBackground(staticCardBg);
+            card.setPadding(16, 12, 16, 12);
+            LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            cp.bottomMargin = UiUtils.dp(this, 8);
+            card.setLayoutParams(cp);
+            LinearLayout col = new LinearLayout(this);
+            col.setOrientation(LinearLayout.VERTICAL);
+            OreTextView name = new OreTextView(this);
+            name.setText(item.itemName);
+            name.setTextColor(Color.WHITE);
+            name.setTextSize(14);
+            col.addView(name);
+            OreTextView status = new OreTextView(this);
+            status.setText("状态：" + McDevApi.statusLabel(item.status) + "  (ID: " + item.itemId + ")");
+            status.setTextColor(Color.parseColor("#AAAAAA"));
+            status.setTextSize(11);
+            col.addView(status);
+            UiUtils.addGap(this, col, 6);
+            col.addView(buildActionRow(item));
+            card.addView(col);
+            managerListContainer.addView(card);
+        }
+    }
+
+    private LinearLayout buildActionRow(final McDevApi.WorkItem item) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER);
+        String status = item.status == null ? "" : item.status;
+        if ("init".equals(status)) {
+            addActionBtn(row, "自测", new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    // ApplySelfTestDTO 只接受 self_test_pass_check；is_check_apply 属于提审 DTO。
+                    performAction(item, "self-test-apply", "{\"self_test_pass_check\":false}", false);
+                }
+            });
+            addActionBtn(row, "提交审核", new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    performAction(item, "apply_review", "{\"apply_review_text\":\"\",\"conflict_notify\":1,\"conflict_notify_type\":[1],\"is_check_apply\":false}", false);
+                }
+            });
+        } else if ("self_test".equals(status) || "self_test_prepare".equals(status)) {
+            addActionBtn(row, "取消自测", new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    performAction(item, "cancel_self_test", null, false);
+                }
+            });
+        } else if ("reviewing".equals(status) || "prepare".equals(status)) {
+            addActionBtn(row, "取消审核", new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    performAction(item, "cancel_review", null, false);
+                }
+            });
+        } else if ("accept".equals(status)) {
+            addActionBtn(row, "上架", new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    performAction(item, "online", "{\"op_platform\":\"all\"}", false);
+                }
+            });
+        }
+        addActionBtn(row, "编辑", new View.OnClickListener() {
+            @Override public void onClick(View v) { editWorkDialog(item); }
+        });
+        addActionBtn(row, "删除", new View.OnClickListener() {
+            @Override public void onClick(View v) { confirmDelete(item); }
+        });
+        return row;
+    }
+
+    private void addActionBtn(LinearLayout row, String text, View.OnClickListener listener) {
+        OreButton btn = new OreButton(this);
+        btn.setText(text);
+        btn.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+        btn.setTextSize(11);
+        btn.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        btn.setOnClickListener(listener);
+        row.addView(btn);
+    }
+
+    private void performAction(final McDevApi.WorkItem item, final String action,
+                               final String jsonBody, final boolean isDelete) {
+        final String cookie = settings.getString(Constants.PREFS_MC_COOKIE, "");
+        managerStatusText.setText("操作中...");
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final boolean ok;
+                if (isDelete) ok = McDevApi.deleteWork(cookie, "pe", item.itemId);
+                else ok = McDevApi.changeStatus(cookie, "pe", item.itemId, action, jsonBody);
+                UiUtils.runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        String error = McDevApi.getLastError();
+                        UiUtils.toast(MainActivity.this, ok ? "操作成功"
+                                : (error == null || error.isEmpty() ? "操作失败" : "操作失败：" + error));
+                        refreshWorks();
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private void confirmDelete(final McDevApi.WorkItem item) {
+        // 与主页/收件箱确认弹窗保持一致：标题使用原生区域，正文使用标准 16dp 内边距。
+        OreTextView bodyText = new OreTextView(this);
+        bodyText.setText("确定删除《" + item.itemName + "》？此操作不可恢复！");
+        bodyText.setTextColor(Color.WHITE);
+        bodyText.setTextSize(14);
+        bodyText.setGravity(Gravity.CENTER_VERTICAL | Gravity.LEFT);
+
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setGravity(Gravity.CENTER_VERTICAL);
+        int padding = UiUtils.dp(this, 16);
+        body.setPadding(padding, padding, padding, padding);
+        body.addView(bodyText, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
 
         OreDialogBuilder builder = new OreDialogBuilder(this);
-        builder.setTitle("确认删除");
-        builder.setView(msgLayout);
-        builder.setPositiveButton("删除", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) { deleteProject(projectDir); dialog.dismiss(); recreate(); }
-            });
-        builder.getPositiveButton().setStyleSheet(StyleSheet.STYLE_RED);
+        builder.setTitle("删除作品");
+        builder.setView(body);
         builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
-            });
+            @Override public void onClick(DialogInterface d, int w) { d.dismiss(); }
+        });
+        builder.setPositiveButton("删除", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int w) {
+                performAction(item, null, null, true);
+            }
+        });
+        builder.getPositiveButton().setStyleSheet(StyleSheet.STYLE_RED);
         builder.show();
     }
 
-    private void deleteProject(File projectDir) {
-        if (deleteRecursive(projectDir)) Toast.makeText(this, "项目已删除", Toast.LENGTH_SHORT).show();
-        else Toast.makeText(this, "删除失败", Toast.LENGTH_SHORT).show();
+    private void showAddWorkDialog() {
+        final String cookie = settings.getString(Constants.PREFS_MC_COOKIE, "");
+        if (cookie == null || cookie.isEmpty()) { UiUtils.toast(this, "请先登录"); return; }
+        Intent it = new Intent(this, WorkDetailActivity.class);
+        it.putExtra("mode", "create");
+        startActivityForResult(it, REQ_WORK_SAVE);
     }
 
-    private boolean deleteRecursive(File file) {
-        if (file.isDirectory()) { File[] children = file.listFiles(); if (children != null) for (File child : children) deleteRecursive(child); }
-        return file.delete();
+    private void editWorkDialog(final McDevApi.WorkItem item) {
+        final String cookie = settings.getString(Constants.PREFS_MC_COOKIE, "");
+        if (cookie == null || cookie.isEmpty()) { UiUtils.toast(this, "请先登录"); return; }
+        Intent it = new Intent(this, WorkDetailActivity.class);
+        it.putExtra("mode", "edit");
+        it.putExtra("item_id", item.itemId);
+        it.putExtra("item_name", item.itemName);
+        startActivityForResult(it, REQ_WORK_SAVE);
+    }
+    // 新增/编辑作品保存成功后刷新列表
+    private static final int REQ_WORK_SAVE = 2001;
+
+    private static String escapeJson(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
-    private void createBackup(File projectDir) {
-        try {
-            if (projectDir.getParentFile() != null && projectDir.getParentFile().getName().endsWith("_back")) {
-                Toast.makeText(this, "备份中的项目不能再备份", Toast.LENGTH_SHORT).show(); return;
+    private void addEmptyTip(String text) {
+        OreTextView tip = new OreTextView(this);
+        tip.setText(text);
+        tip.setTextColor(Color.parseColor("#666666"));
+        tip.setTextSize(13);
+        tip.setGravity(Gravity.CENTER);
+        tip.setPadding(0, 24, 0, 24);
+        managerListContainer.addView(tip);
+    }
+
+    private void showTab(int index) {
+        if (scrollView != null) scrollView.setVisibility(index == 2 ? View.GONE : View.VISIBLE);
+        if (projectListContainer != null) projectListContainer.setVisibility(index == 0 ? View.VISIBLE : View.GONE);
+        if (aboutContainer != null) aboutContainer.setVisibility(index == 1 ? View.VISIBLE : View.GONE);
+        if (managerContainer != null) managerContainer.setVisibility(index == 2 ? View.VISIBLE : View.GONE);
+        if (buttonRow != null) buttonRow.setVisibility(index == 0 ? View.VISIBLE : View.GONE);
+        if (searchBox != null) searchBox.setVisibility(index == 0 ? View.VISIBLE : View.GONE);
+    }
+
+    private void downloadFile(final String url, final String fileName) {
+        UiUtils.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                downloadProgressBar.setProgress(0);
+                downloadProgressBar.setVisibility(View.VISIBLE);
             }
-            String originalId = projectDir.getName();
-            if (originalId.contains("_back")) originalId = originalId.substring(0, originalId.lastIndexOf("_back"));
+        });
 
-            File backupContainer = new File(MOD_FOLDER_PATH, originalId + "_back");
-            backupContainer.mkdirs();
-            String backupSubName = String.valueOf(System.currentTimeMillis() / 1000);
-            File backupSubDir = new File(backupContainer, backupSubName);
-            copyDirectory(projectDir, backupSubDir);
-            Toast.makeText(this, "备份成功", Toast.LENGTH_SHORT).show();
-            loadProjects();
-        } catch (Exception e) { Toast.makeText(this, "备份失败: " + e.getMessage(), Toast.LENGTH_SHORT).show(); }
-    }
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                java.net.HttpURLConnection conn = null;
+                java.io.InputStream is = null;
+                java.io.FileOutputStream fos = null;
+                final File outFile = new File(downloadTargetDir, fileName);
+                try {
+                    java.net.URL downloadUrl = new java.net.URL(url);
+                    conn = (java.net.HttpURLConnection) downloadUrl.openConnection();
+                    conn.setRequestMethod("GET");
+                    conn.setConnectTimeout(15000);
+                    conn.setReadTimeout(15000);
+                    conn.setRequestProperty("User-Agent", "NemoModStudio");
+                    conn.connect();
 
-    private void overwriteOriginalFromBackup(File backupSubDir) {
-        File parentDir = backupSubDir.getParentFile();
-        String containerName = parentDir.getName();
-        if (!containerName.endsWith("_back")) { Toast.makeText(this, "无法识别原项目ID", Toast.LENGTH_SHORT).show(); return; }
-        String originalId = containerName.substring(0, containerName.length() - 5);
-        File originalDir = new File(MOD_FOLDER_PATH, originalId);
-        if (originalDir.exists()) deleteRecursive(originalDir);
-        try {
-            copyDirectory(backupSubDir, originalDir);
-            Toast.makeText(this, "覆盖成功", Toast.LENGTH_SHORT).show();
-            loadProjects();
-        } catch (Exception e) { Toast.makeText(this, "覆盖失败: " + e.getMessage(), Toast.LENGTH_SHORT).show(); }
-    }
-
-    private void copyDirectory(File source, File dest) throws IOException {
-        if (source.isDirectory()) {
-            dest.mkdirs();
-            File[] children = source.listFiles();
-            if (children != null) for (File child : children) copyDirectory(child, new File(dest, child.getName()));
-        } else {
-            FileInputStream fis = new FileInputStream(source);
-            FileOutputStream fos = new FileOutputStream(dest);
-            byte[] buffer = new byte[8192];
-            int len;
-            while ((len = fis.read(buffer)) != -1) fos.write(buffer, 0, len);
-            fis.close(); fos.close();
-        }
-    }
-
-    private void openProjectFolder(File projectDir) {
-        try {
-            Uri uri = getUriForFile(projectDir);
-            Intent intent = new Intent(Intent.ACTION_VIEW);
-            intent.setDataAndType(uri, "application/x-directory");
-            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivity(intent);
-        } catch (Exception e) {
-            try {
-                Uri uri = getUriForFile(projectDir);
-                Intent intent = new Intent(Intent.ACTION_VIEW);
-                intent.setDataAndType(uri, "resource/folder");
-                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                startActivity(intent);
-            } catch (Exception e2) { Toast.makeText(this, "没有可用的文件管理器", Toast.LENGTH_SHORT).show(); }
-        }
-    }
-
-    private Uri getUriForFile(File file) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            return androidx.core.content.FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file);
-        } else { return Uri.fromFile(file); }
-    }
-
-    // ======================== 进度 / 扫描等 ========================
-    private void showImportProgress(boolean show) {
-        importProgressBar.setVisibility(show ? View.VISIBLE : View.GONE);
-        if (show) importProgressBar.setProgress(0);
-    }
-
-    private void hideImportProgress() {
-        MainActivity.this.runOnUiThread(new Runnable() { public void run() { showImportProgress(false); }});
-    }
-
-    private void copyDocumentTreeWithProgress(DocumentFile source, File dest) throws IOException {
-        final int totalFiles = countFiles(source);
-        final int[] copiedFiles = {0};
-        copyDocumentTreeWithCount(source, dest, totalFiles, copiedFiles);
-    }
-
-    private int countFiles(DocumentFile root) {
-        int count = 0;
-        if (root.isDirectory()) { DocumentFile[] children = root.listFiles(); if (children != null) for (DocumentFile child : children) count += countFiles(child); }
-        else count = 1;
-        return count;
-    }
-
-    private void copyDocumentTreeWithCount(DocumentFile source, File dest, final int total, final int[] copied) throws IOException {
-        if (source.isDirectory()) {
-            dest.mkdirs();
-            DocumentFile[] children = source.listFiles();
-            if (children != null) for (DocumentFile child : children) copyDocumentTreeWithCount(child, new File(dest, child.getName()), total, copied);
-        } else {
-            InputStream is = getContentResolver().openInputStream(source.getUri());
-            if (is != null) {
-                FileOutputStream os = new FileOutputStream(dest);
-                byte[] buffer = new byte[8192];
-                int len;
-                while ((len = is.read(buffer)) != -1) { os.write(buffer, 0, len); try { Thread.sleep(1); } catch (InterruptedException e) {} }
-                os.close(); is.close();
-                copied[0]++;
-                final int progress = total > 0 ? (copied[0] * 100 / total) : 0;
-                updateProgress(progress);
-            }
-        }
-    }
-
-    private void organizeZipImportedFiles(File tempDir, File targetProjectDir) {
-        File[] entries = tempDir.listFiles();
-        if (entries == null) return;
-
-        File behPack = null, resPack = null, studioJson = null, workMcscfg = null;
-        for (File entry : entries) {
-            String name = entry.getName().toLowerCase();
-            if (name.startsWith("behavior_pack_") || name.startsWith("behaviour_pack_")) behPack = entry;
-            else if (name.startsWith("resource_pack_")) resPack = entry;
-            else if (name.equals("studio.json")) studioJson = entry;
-            else if (name.equals("work.mcscfg")) workMcscfg = entry;
-        }
-        if (behPack == null || resPack == null) throw new RuntimeException("ZIP包必须包含behavior_pack和resource_pack文件夹");
-
-        targetProjectDir.mkdirs();
-        try {
-            moveFile(behPack, new File(targetProjectDir, behPack.getName()));
-            moveFile(resPack, new File(targetProjectDir, resPack.getName()));
-            if (studioJson != null) moveFile(studioJson, new File(targetProjectDir, "studio.json"));
-            if (workMcscfg != null) moveFile(workMcscfg, new File(targetProjectDir, "work.mcscfg"));
-        } catch (Exception e) { LogUtil.logException(e); throw new RuntimeException("文件移动失败"); }
-        normalizeImportedProject(targetProjectDir);
-    }
-
-    private void normalizeImportedProject(File projectDir) {
-        File[] entries = projectDir.listFiles();
-        if (entries == null) return;
-        for (File entry : entries) {
-            String name = entry.getName();
-            if (name.startsWith("behavior_pack_") && entry.isDirectory()) {
-                File entitiesDir = new File(entry, "entities");
-                if (!entitiesDir.exists()) entitiesDir.mkdirs();
-                File manifestFile = new File(entry, "manifest.json");
-                if (!manifestFile.exists()) {
-                    String uuid1 = UUID.randomUUID().toString();
-                    String uuid2 = UUID.randomUUID().toString();
-                    writeStringToFile(manifestFile, "{\n    \"format_version\": 1,\n    \"header\": {\n        \"min_engine_version\": [1, 18, 0],\n        \"uuid\": \"" + uuid1 + "\",\n        \"version\": [0, 0, 1]\n    },\n    \"modules\": [{\n        \"type\": \"data\",\n        \"uuid\": \"" + uuid2 + "\",\n        \"version\": [0, 0, 1]\n    }]\n}");
-                }
-            } else if (name.startsWith("resource_pack_") && entry.isDirectory()) {
-                File texturesDir = new File(entry, "textures");
-                if (!texturesDir.exists()) texturesDir.mkdirs();
-                File manifestFile = new File(entry, "manifest.json");
-                if (!manifestFile.exists()) {
-                    String uuid1 = UUID.randomUUID().toString();
-                    String uuid2 = UUID.randomUUID().toString();
-                    writeStringToFile(manifestFile, "{\n    \"format_version\": 1,\n    \"header\": {\n        \"min_engine_version\": [1, 18, 0],\n        \"uuid\": \"" + uuid1 + "\",\n        \"version\": [0, 0, 1]\n    },\n    \"modules\": [{\n        \"type\": \"resources\",\n        \"uuid\": \"" + uuid2 + "\",\n        \"version\": [0, 0, 1]\n    }]\n}");
-                }
-            }
-        }
-    }
-
-    private void loadProjects() {
-        try {
-            if (!checkStoragePermission()) return;
-            projectListContainer.removeAllViews();
-
-            File modDir = new File(MOD_FOLDER_PATH);
-            if (!modDir.exists()) modDir.mkdirs();
-
-            File[] allEntries = modDir.listFiles(new java.io.FileFilter() {
-                    @Override public boolean accept(File file) { return file.isDirectory() && !file.getName().startsWith("temp_"); }
-                });
-            if (allEntries == null || allEntries.length == 0) { projectListContainer.addView(emptyText("暂无模组项目，点击下方按钮创建")); return; }
-
-            Map<String, File> originalMap = new LinkedHashMap<>();
-            Map<String, File> backupContainerMap = new LinkedHashMap<>();
-            Map<String, List<File>> backupSubMap = new LinkedHashMap<>();
-            List<File> backupContainers = new ArrayList<>(), normalProjects = new ArrayList<>();
-
-            for (File entry : allEntries) {
-                if (entry.getName().endsWith("_back")) backupContainers.add(entry);
-                else normalProjects.add(entry);
-            }
-            for (File project : normalProjects) originalMap.put(project.getName(), project);
-            for (File container : backupContainers) {
-                String originalId = container.getName().substring(0, container.getName().length() - 5);
-                backupContainerMap.put(originalId, container);
-                File[] subDirs = container.listFiles(new java.io.FileFilter() { @Override public boolean accept(File file) { return file.isDirectory(); } });
-                List<File> subList = new ArrayList<>();
-                if (subDirs != null) for (File sub : subDirs) subList.add(sub);
-                backupSubMap.put(originalId, subList);
-            }
-
-            boolean hasResults = false;
-            Set<String> allIds = new LinkedHashSet<>(); allIds.addAll(originalMap.keySet()); allIds.addAll(backupContainerMap.keySet());
-
-            for (final String originalId : allIds) {
-                File originalProject = originalMap.get(originalId);
-                List<File> backups = backupSubMap.get(originalId);
-                if (backups == null) backups = new ArrayList<>();
-                String displayName = getProjectName(originalProject != null ? originalProject : (backups.size() > 0 ? backups.get(0) : null));
-
-// 获取命名空间
-				String namespace = "";
-				if (originalProject != null) {
-					namespace = getProjectNamespace(originalProject);
-				} else if (backups.size() > 0) {
-					namespace = getProjectNamespace(backups.get(0));   // 从首个副本中读取
-				}
-
-				if (!searchQuery.isEmpty()) {
-					boolean match = displayName.toLowerCase().contains(searchQuery.toLowerCase())
-						|| originalId.toLowerCase().contains(searchQuery.toLowerCase())
-						|| namespace.toLowerCase().contains(searchQuery.toLowerCase());
-					if (!match) {
-						for (File backup : backups) {
-							if (backup.getName().toLowerCase().contains(searchQuery.toLowerCase())) {
-								match = true;
-								break;
-							}
-						}
-					}
-					if (!match) continue;
-				}
-                hasResults = true;
-
-                if (originalProject != null) projectListContainer.addView(createProjectCard(originalProject));
-                if (backups.size() > 0) {
-                    int maxDisplay = Math.min(backups.size(), 5);
-                    OreAccordion accordion = new OreAccordion(this);
-                    accordion.setTitle("备份版本");
-                    accordion.setSubtitle("共 " + backups.size() + " 个备份");
-                    LinearLayout backupContent = new LinearLayout(this);
-                    backupContent.setOrientation(LinearLayout.VERTICAL);
-                    backupContent.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-                    backupContent.setPadding(0, 8, 0, 8);
-                    for (int i = 0; i < maxDisplay; i++) { backupContent.addView(createProjectCard(backups.get(i))); if (i < maxDisplay - 1) addGap(backupContent, 8); }
-                    if (backups.size() > 5) {
-                        addGap(backupContent, 8);
-                        OreButton viewAllBtn = new OreButton(this);
-                        viewAllBtn.setText("查看全部备份 (" + backups.size() + "个)");
-                        viewAllBtn.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-                        viewAllBtn.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { Intent i = new Intent(MainActivity.this, BackupsActivity.class); i.putExtra("original_id", originalId); startActivity(i); } });
-                        backupContent.addView(viewAllBtn);
+                    int totalSize = conn.getContentLength();
+                    is = conn.getInputStream();
+                    fos = new java.io.FileOutputStream(outFile);
+                    byte[] buffer = new byte[8192];
+                    int len, downloaded = 0;
+                    while ((len = is.read(buffer)) != -1) {
+                        fos.write(buffer, 0, len);
+                        downloaded += len;
+                        if (totalSize > 0) {
+                            final int progress = (int) (downloaded * 100L / totalSize);
+                            UiUtils.runOnUiThread(new Runnable() {
+                                @Override public void run() { downloadProgressBar.setProgress(progress); }
+                            });
+                        }
                     }
-                    accordion.setContentView(backupContent);
-                    projectListContainer.addView(accordion);
+                    fos.flush();
+
+                    if (isJsonErrorFile(outFile)) {
+                        outFile.delete();
+                        UiUtils.toast(MainActivity.this, "下载错误，需要打开浏览器下载");
+                    } else {
+                        UiUtils.toast(MainActivity.this, "下载完成：" + outFile.getAbsolutePath());
+                    }
+                } catch (final Exception e) {
+                    LogUtil.logException(e);
+                    UiUtils.toast(MainActivity.this, "下载失败：" + e.getMessage());
+                    if (outFile.exists()) outFile.delete();
+                } finally {
+                    try { if (is != null) is.close(); } catch (Exception ignored) {}
+                    try { if (fos != null) fos.close(); } catch (Exception ignored) {}
+                    if (conn != null) conn.disconnect();
+                    UiUtils.runOnUiThread(new Runnable() {
+                        @Override public void run() { downloadProgressBar.setVisibility(View.GONE); }
+                    });
                 }
-                addGap(projectListContainer, 12);
             }
-            if (!hasResults) projectListContainer.addView(emptyText("没有找到匹配的项目"));
-        } catch (Exception e) { LogUtil.logException(e); }
+        }).start();
     }
 
-    private OreTextView emptyText(String msg) {
-        OreTextView tv = new OreTextView(this);
-        tv.setText(msg); tv.setTextColor(Color.WHITE); return tv;
+    /** 判断下载文件是否为包含 "status":"no_login" 的 JSON 错误。 */
+    private boolean isJsonErrorFile(File file) {
+        try {
+            byte[] buffer = new byte[Math.min((int) file.length(), 1024)];
+            java.io.FileInputStream fis = new java.io.FileInputStream(file);
+            fis.read(buffer);
+            fis.close();
+            String content = new String(buffer, "UTF-8").trim();
+            if (content.startsWith("{") && content.contains("\"status\"")) {
+                JSONObject json = new JSONObject(content);
+                return "no_login".equals(json.optString("status"));
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
+    private void openDownloadFolder() {
+        openProjectFolder(downloadTargetDir);
+    }
+
+    // ==================== onActivityResult ====================
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        // 系统“管理所有文件”设置页通常不会返回 RESULT_OK，必须独立处理。
+        if (requestCode == REQUEST_MANAGE_STORAGE) {
+            showStoragePermissionUiIfNeeded();
+            if (checkStoragePermission()) loadProjects();
+            return;
+        }
+        if (resultCode != RESULT_OK) return;
+        switch (requestCode) {
+            case REQ_WORK_SAVE:
+                refreshWorks();
+                break;
+            case REQUEST_IMPORT_FOLDER:
+                if (data != null && data.getData() != null) importFromFolder(data.getData());
+                break;
+            case REQUEST_IMPORT_ZIP:
+                if (data != null && data.getData() != null) importFromZip(data.getData());
+                break;
+            case REQUEST_EXPORT_PROJECT:
+                if (pendingExportDir != null && data != null && data.getData() != null) {
+                    try {
+                        projectManager.exportProject(pendingExportDir, data.getData());
+                        UiUtils.toast(this, "导出成功");
+                    } catch (IOException e) {
+                        LogUtil.logException(e);
+                        UiUtils.toast(this, "导出失败: " + e.getMessage());
+                    }
+                }
+                break;
+            case REQUEST_MANAGE_STORAGE:
+                loadProjects();
+                break;
+        }
+    }
+
+    // ==================== 生命周期 ====================
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (checkStoragePermission()) {
+            loadProjects();
+            autoCheckForUpdate();
+        }
     }
 
     @Override
-	protected void onResume() {
-		super.onResume();
-		if (checkStoragePermission()) {
-			loadProjects();
-			autoCheckForUpdate();   // 原有的自动更新检查
-		}
-		// 新增：恢复 WebView（如果有的话）
-		if (managerWebView != null) {
-			managerWebView.onResume();
-		}
-	}
-	
-	private void autoCheckForUpdate() {
-		// 获取今天的日期字符串
-		SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault());
-		final String today = sdf.format(new Date());
-
-		String lastCheckDate = prefs.getString(PREFS_LAST_CHECK_DATE, "");
-		if (today.equals(lastCheckDate)) {
-			// 今天已经检查过，不再重复检查
-			return;
-		}
-
-		// 记录今天已检查
-		SharedPreferences.Editor editor = prefs.edit();
-		editor.putString(PREFS_LAST_CHECK_DATE, today);
-		editor.apply();
-
-		new Thread(new Runnable() {
-				@Override
-				public void run() {
-					try {
-						URL url = new URL("https://api.github.com/repos/xtt-xt/Nemo-Mobile-Mod-Studio/releases/latest");
-						HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-						conn.setRequestMethod("GET");
-						conn.setConnectTimeout(10000);
-						conn.setReadTimeout(10000);
-						conn.setRequestProperty("User-Agent", "NemoModStudio");
-						conn.setRequestProperty("Accept", "application/json");
-
-						InputStream is = conn.getInputStream();
-						BufferedReader reader = new BufferedReader(new InputStreamReader(is));
-						StringBuilder response = new StringBuilder();
-						String line;
-						while ((line = reader.readLine()) != null) {
-							response.append(line);
-						}
-						reader.close();
-						conn.disconnect();
-
-						String responseStr = response.toString();
-						if (!responseStr.trim().startsWith("{") && !responseStr.trim().startsWith("[")) {
-							return; // 不是合法的JSON，静默失败
-						}
-
-						JSONObject json = new JSONObject(responseStr);
-						final String latestTag = json.optString("tag_name", "");
-						final String latestVersion = latestTag.startsWith("v") ? latestTag.substring(1) : latestTag;
-						final String body = json.optString("body", "");
-						final String releaseUrl = json.optString("html_url", "");
-
-						// 获取当前版本
-						final String currentVersion;
-						try {
-							PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
-							currentVersion = info.versionName;
-						} catch (Exception e) {
-							return;
-						}
-
-						// 比较版本号（简单字符串比较，可根据需要改为数字拆分比较）
-						if (!latestVersion.equals(currentVersion)) {
-							// 检查今天是否已经弹过窗
-							boolean alreadyShown = prefs.getBoolean(PREFS_UPDATE_DIALOG_SHOWN_TODAY + "_" + today, false);
-							if (!alreadyShown) {
-								final String finalBody = body;
-								runOnUiThread(new Runnable() {
-										@Override
-										public void run() {
-											showUpdateDialog(latestVersion, finalBody, releaseUrl, true);
-										}
-									});
-							}
-						}
-					} catch (Exception e) {
-						// 自动检查失败，静默处理，不打扰用户
-					}
-				}
-			}).start();
-	}
-	
-	private void setupManagerPage() {
-		if (managerWebView != null) return;
-
-		// ---------- 下载进度条（白色） ----------
-		downloadProgressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-		downloadProgressBar.setMax(100);
-		downloadProgressBar.setProgress(0);
-		downloadProgressBar.setVisibility(View.GONE);
-		downloadProgressBar.setProgressTintList(ColorStateList.valueOf(Color.WHITE));
-		managerContainer.addView(downloadProgressBar, new LinearLayout.LayoutParams(
-									 LinearLayout.LayoutParams.MATCH_PARENT,
-									 (int) (6 * getResources().getDisplayMetrics().density)));
-
-		// ---------- WebView ----------
-		managerWebView = new WebView(this);
-		WebSettings settings = managerWebView.getSettings();
-		settings.setJavaScriptEnabled(true);
-		settings.setDomStorageEnabled(true);
-		settings.setUseWideViewPort(true);
-		settings.setLoadWithOverviewMode(true);
-		settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-		settings.setAllowFileAccess(true);
-
-		managerWebView.setWebViewClient(new WebViewClient() {
-				@Override
-				public boolean shouldOverrideUrlLoading(WebView view, String url) {
-					view.loadUrl(url);
-					return true;
-				}
-			});
-
-		// 文件上传支持
-		managerWebView.setWebChromeClient(new WebChromeClient() {
-				@Override
-				public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback,
-												 FileChooserParams fileChooserParams) {
-					mUploadMessage = filePathCallback;
-					Intent intent = fileChooserParams.createIntent();
-					try {
-						startActivityForResult(intent, FILECHOOSER_RESULT_CODE);
-					} catch (Exception e) {
-						mUploadMessage = null;
-						Toast.makeText(MainActivity.this, "无法打开文件选择器", Toast.LENGTH_SHORT).show();
-						return false;
-					}
-					return true;
-				}
-			});
-
-		// 文件下载监听
-		managerWebView.setDownloadListener(new DownloadListener() {
-				@Override
-				public void onDownloadStart(String url, String userAgent, String contentDisposition,
-											String mimeType, long contentLength) {
-					if (!checkStoragePermission()) {
-						Toast.makeText(MainActivity.this, "需要存储权限才能下载", Toast.LENGTH_SHORT).show();
-						return;
-					}
-					String fileName = URLUtil.guessFileName(url, contentDisposition, mimeType);
-					downloadFile(url, fileName);
-				}
-			});
-
-		managerWebView.loadUrl("https://mcdev.webapp.163.com/#/square?channel=cnt");
-		managerContainer.addView(managerWebView, new LinearLayout.LayoutParams(
-									 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
-
-		// ---------- 底部按钮行（三个按钮均匀占满） ----------
-		LinearLayout buttonRow = new LinearLayout(this);
-		buttonRow.setOrientation(LinearLayout.HORIZONTAL);
-		buttonRow.setGravity(Gravity.CENTER);
-		buttonRow.setLayoutParams(new LinearLayout.LayoutParams(
-									  LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-
-		// 刷新按钮
-		managerRefreshBtn = new OreButton(this);
-		managerRefreshBtn.setText("刷新页面");
-		managerRefreshBtn.setStyleSheet(StyleSheet.STYLE_WHITE);
-		managerRefreshBtn.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-		managerRefreshBtn.setOnClickListener(new View.OnClickListener() {
-				@Override
-				public void onClick(View v) {
-					if (managerWebView != null) managerWebView.reload();
-				}
-			});
-		buttonRow.addView(managerRefreshBtn);
-
-		// 在浏览器打开按钮
-		managerOpenBtn = new OreButton(this);
-		managerOpenBtn.setText("浏览器打开");
-		managerOpenBtn.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-		managerOpenBtn.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-		managerOpenBtn.setOnClickListener(new View.OnClickListener() {
-				@Override
-				public void onClick(View v) {
-					try {
-						Intent intent = new Intent(Intent.ACTION_VIEW,
-												   Uri.parse("https://mcdev.webapp.163.com/#/square?channel=cnt"));
-						startActivity(intent);
-					} catch (Exception e) {
-						Toast.makeText(MainActivity.this, "没有可用的浏览器", Toast.LENGTH_SHORT).show();
-					}
-				}
-			});
-		buttonRow.addView(managerOpenBtn);
-
-		// 打开下载目录按钮
-		managerDownloadDirBtn = new OreButton(this);
-		managerDownloadDirBtn.setText("下载目录");
-		managerDownloadDirBtn.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-		managerDownloadDirBtn.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-		managerDownloadDirBtn.setOnClickListener(new View.OnClickListener() {
-				@Override
-				public void onClick(View v) {
-					openDownloadFolder();
-				}
-			});
-		buttonRow.addView(managerDownloadDirBtn);
-
-		managerContainer.addView(buttonRow);
-
-		// 确保下载目录存在
-		downloadTargetDir = new File(Environment.getExternalStorageDirectory(), "McMod/Download");
-		if (!downloadTargetDir.exists()) downloadTargetDir.mkdirs();
-	}
-	
-	private void showTab(int index) {
-		// 0=开发, 1=关于, 2=管理
-		if (scrollView != null) {
-			scrollView.setVisibility(index == 2 ? View.GONE : View.VISIBLE);
-		}
-		if (projectListContainer != null) {
-			projectListContainer.setVisibility(index == 0 ? View.VISIBLE : View.GONE);
-		}
-		if (aboutContainer != null) {
-			aboutContainer.setVisibility(index == 1 ? View.VISIBLE : View.GONE);
-		}
-		if (managerContainer != null) {
-			managerContainer.setVisibility(index == 2 ? View.VISIBLE : View.GONE);
-		}
-		if (buttonRow != null) {
-			buttonRow.setVisibility(index == 0 ? View.VISIBLE : View.GONE);
-		}
-		if (searchBox != null) {
-			searchBox.setVisibility(index == 0 ? View.VISIBLE : View.GONE);
-		}
-	}
-	
-	@Override
-	protected void onPause() {
-		super.onPause();
-		if (managerWebView != null) managerWebView.onPause();
-	}
-	@Override
-	protected void onDestroy() {
-		if (managerWebView != null) {
-			// 停止加载并清空页面
-			managerWebView.loadUrl("about:blank");
-			managerWebView.clearHistory();
-			// 移除 WebView 避免持有 Activity 引用
-			ViewParent parent = managerWebView.getParent();
-			if (parent instanceof ViewGroup) {
-				((ViewGroup) parent).removeView(managerWebView);
-			}
-			managerWebView.destroy();
-			managerWebView = null;
-		}
-		super.onDestroy();
-	}
-	
-	private void downloadFile(final String url, final String fileName) {
-		runOnUiThread(new Runnable() {
-				@Override public void run() {
-					downloadProgressBar.setProgress(0);
-					downloadProgressBar.setVisibility(View.VISIBLE);
-				}
-			});
-
-		new Thread(new Runnable() {
-				@Override
-				public void run() {
-					HttpURLConnection conn = null;
-					InputStream is = null;
-					FileOutputStream fos = null;
-					File outFile = new File(downloadTargetDir, fileName);
-					try {
-						URL downloadUrl = new URL(url);
-						conn = (HttpURLConnection) downloadUrl.openConnection();
-						conn.setRequestMethod("GET");
-						conn.setConnectTimeout(15000);
-						conn.setReadTimeout(15000);
-						conn.setRequestProperty("User-Agent", "NemoModStudio");
-						conn.connect();
-
-						// 检查响应头，如果是 JSON 类型且长度较小，可能为错误消息
-						String contentType = conn.getContentType();
-						int totalSize = conn.getContentLength();
-						is = conn.getInputStream();
-
-						fos = new FileOutputStream(outFile);
-						byte[] buffer = new byte[8192];
-						int len, downloaded = 0;
-						while ((len = is.read(buffer)) != -1) {
-							fos.write(buffer, 0, len);
-							downloaded += len;
-							if (totalSize > 0) {
-								final int progress = (int) (downloaded * 100L / totalSize);
-								runOnUiThread(new Runnable() {
-										@Override public void run() { downloadProgressBar.setProgress(progress); }
-									});
-							}
-						}
-						fos.flush();
-
-						// 检查文件是否为“未登录”错误 JSON
-						if (isJsonErrorFile(outFile)) {
-							outFile.delete();  // 删除错误文件
-							showToast("下载错误，需要打开浏览器下载");
-						} else {
-							showToast("下载完成：" + outFile.getAbsolutePath());
-						}
-					} catch (final Exception e) {
-						showToast("下载失败：" + e.getMessage());
-						LogUtil.logException(e);
-						if (outFile.exists()) outFile.delete();
-					} finally {
-						try { if (is != null) is.close(); } catch (Exception e) {}
-						try { if (fos != null) fos.close(); } catch (Exception e) {}
-						if (conn != null) conn.disconnect();
-						runOnUiThread(new Runnable() {
-								@Override public void run() { downloadProgressBar.setVisibility(View.GONE); }
-							});
-					}
-				}
-			}).start();
-	}
-
-	/**
-	 * 判断下载文件是否为包含 "status":"no_login" 的 JSON 错误
-	 */
-	private boolean isJsonErrorFile(File file) {
-		try {
-			// 只读取前 1024 字节就足够判断了
-			byte[] buffer = new byte[Math.min((int) file.length(), 1024)];
-			FileInputStream fis = new FileInputStream(file);
-			fis.read(buffer);
-			fis.close();
-			String content = new String(buffer, "UTF-8").trim();
-			if (content.startsWith("{") && content.contains("\"status\"")) {
-				JSONObject json = new JSONObject(content);
-				return "no_login".equals(json.optString("status"));
-			}
-		} catch (Exception ignored) {}
-		return false;
-	}
-	
-	private void openDownloadFolder() {
-		try {
-			Uri uri;
-			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-				uri = androidx.core.content.FileProvider.getUriForFile(
-                    this, getPackageName() + ".fileprovider", downloadTargetDir);
-			} else {
-				uri = Uri.fromFile(downloadTargetDir);
-			}
-			Intent intent = new Intent(Intent.ACTION_VIEW);
-			intent.setDataAndType(uri, "application/x-directory");
-			intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-			startActivity(intent);
-		} catch (Exception e) {
-			try {
-				Uri uri;
-				if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-					uri = androidx.core.content.FileProvider.getUriForFile(
-                        this, getPackageName() + ".fileprovider", downloadTargetDir);
-				} else {
-					uri = Uri.fromFile(downloadTargetDir);
-				}
-				Intent intent = new Intent(Intent.ACTION_VIEW);
-				intent.setDataAndType(uri, "resource/folder");
-				intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-				startActivity(intent);
-			} catch (Exception e2) {
-				Toast.makeText(this, "无法打开文件夹", Toast.LENGTH_SHORT).show();
-			}
-		}
-	}
-
-    // ======================== 工具方法 ========================
-    private void writeStringToFile(File file, String content) {
-        try { FileWriter fw = new FileWriter(file); fw.write(content); fw.close(); } catch (IOException e) { e.printStackTrace(); }
+    protected void onPause() {
+        super.onPause();
     }
-    private String randomString(int length) { String chars = "abcdefghijklmnopqrstuvwxyz0123456789"; StringBuilder sb = new StringBuilder(); for (int i = 0; i < length; i++) sb.append(chars.charAt((int)(Math.random()*chars.length()))); return sb.toString(); }
-    private void moveFile(File source, File dest) throws IOException {
-        if (source.isDirectory()) { dest.mkdirs(); File[] children = source.listFiles(); if (children != null) for (File child : children) moveFile(child, new File(dest, child.getName())); source.delete(); }
-        else { FileInputStream fis = new FileInputStream(source); FileOutputStream fos = new FileOutputStream(dest); byte[] buffer = new byte[8192]; int len; while ((len = fis.read(buffer)) != -1) fos.write(buffer, 0, len); fis.close(); fos.close(); source.delete(); }
-    }
-    private void cleanTempFolders() { File modDir = new File(MOD_FOLDER_PATH); File[] temps = modDir.listFiles(new java.io.FileFilter() { @Override public boolean accept(File file) { return file.isDirectory() && file.getName().startsWith("temp_"); } }); if (temps != null) for (File tmp : temps) deleteRecursive(tmp); }
-    private void addGap(LinearLayout parent, int h) { View v = new View(this); v.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, h)); parent.addView(v); }
 
-    private interface ImportConflictCallback { void onChoice(int choice); }
-    private interface NameInputCallback { void onName(String name); }
-	//回到底部
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+    }
 }
-
-

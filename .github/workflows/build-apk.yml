@@ -1,0 +1,65 @@
+name: Build signed APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-release-apk:
+    name: Build universal release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Restore release keystore
+        env:
+          NEMO_KEYSTORE_BASE64: ${{ secrets.NEMO_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$NEMO_KEYSTORE_BASE64" || { echo "Missing NEMO_KEYSTORE_BASE64 secret" >&2; exit 1; }
+          echo "$NEMO_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/nemo-release.jks"
+          test -s "$RUNNER_TEMP/nemo-release.jks"
+
+      - name: Build signed universal release APK
+        env:
+          NEMO_KEYSTORE_FILE: ${{ runner.temp }}/nemo-release.jks
+          NEMO_KEYSTORE_PASSWORD: ${{ secrets.NEMO_KEYSTORE_PASSWORD }}
+          NEMO_KEY_ALIAS: ${{ secrets.NEMO_KEY_ALIAS }}
+          NEMO_KEY_PASSWORD: ${{ secrets.NEMO_KEY_PASSWORD }}
+        run: |
+          test -n "$NEMO_KEYSTORE_PASSWORD" || { echo "Missing NEMO_KEYSTORE_PASSWORD secret" >&2; exit 1; }
+          test -n "$NEMO_KEY_ALIAS" || { echo "Missing NEMO_KEY_ALIAS secret" >&2; exit 1; }
+          test -n "$NEMO_KEY_PASSWORD" || { echo "Missing NEMO_KEY_PASSWORD secret" >&2; exit 1; }
+          ./gradlew :app:assembleRelease --no-daemon
+          cp app/build/outputs/apk/release/app-release.apk Nemo-universal-release.apk
+
+      - name: Verify APK signature
+        run: |
+          "$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)/apksigner" \
+            verify --verbose --print-certs Nemo-universal-release.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nemo-universal-release
+          path: Nemo-universal-release.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove temporary keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/nemo-release.jks"
