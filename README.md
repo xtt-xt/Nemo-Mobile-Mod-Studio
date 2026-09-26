@@ -43,14 +43,21 @@
 
   <br/>
 
-  <!-- 网盘下载按钮 -->
+  <!-- 123云盘下载按钮 -->
   <a href="https://1825385503.share.123865.com/123pan/0EQWjv-MafMd?pwd=1379#">
-    <img src="https://img.shields.io/badge/📥%20网盘下载-123云盘-blue?style=for-the-badge" alt="网盘下载">
+    <img src="https://img.shields.io/badge/📥%20网盘下载-123云盘-blue?style=for-the-badge" alt="123云盘下载">
+  </a>
+
+  <!-- 小飞机网盘下载按钮 -->
+  <a href="https://share.feijipan.com/s/69v3DEPR">
+    <img src="https://img.shields.io/badge/✈️%20小飞机网盘-不限速下载-orange?style=for-the-badge" alt="小飞机网盘下载">
   </a>
 </div>
 
 <p style="text-align: center; margin-top: 10px;">
-  前往 <a href="https://github.com/xtt-xt/Nemo-Mobile-Mod-Studio/releases"><strong>Releases 页面</strong></a> 或通过 <strong>123云盘</strong> 下载已编译好的 APK 文件（提取码：1379）。
+  前往 <a href="https://github.com/xtt-xt/Nemo-Mobile-Mod-Studio/releases"><strong>Releases 页面</strong></a> 或通过 <strong>123云盘</strong> / <strong>小飞机网盘</strong> 下载已编译好的 APK 文件（提取码：1379）。
+  <br/>
+  <strong>小飞机网盘：</strong><a href="https://share.feijipan.com/s/69v3DEPR">https://share.feijipan.com/s/69v3DEPR</a>
   <br/>
   <strong>兼容设备：</strong>Android 6.0 (Marshmallow, API 23) 及以上系统，覆盖绝大多数 Android 手机和平板。
 </p>
