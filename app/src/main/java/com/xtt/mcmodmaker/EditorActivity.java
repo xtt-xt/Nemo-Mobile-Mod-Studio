@@ -71,8 +71,8 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
     private static final int MODE_BROWSE = 0;
     private static final int MODE_FOCUS = 1;
     private static final int MODE_EDIT = 2;
-    private static final int BLOCK_WIDTH_DP = 110;
-    private static final int BLOCK_SPACING_DP = 8;
+    private static final int BLOCK_WIDTH_DP = 104;
+    private static final int BLOCK_SPACING_DP = 6;
     private static final int REQUEST_IMPORT_IMAGE = 2001;
 
     private String projectPath;
@@ -763,12 +763,14 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
         }
 
         OreTextView nameText = new OreTextView(this);
-        nameText.setText(file.getName());
+        nameText.setText(displayName(file));
         nameText.setTextColor(Color.WHITE);
-        nameText.setTextSize(isListMode ? 13 : 10);
+        nameText.setTextSize(isListMode ? 13 : 9);
         nameText.setGravity(Gravity.CENTER);
-        nameText.setMaxLines(2);
+        // 网格里文件名普遍很长，给三行；列表模式一行就够
+        nameText.setMaxLines(isListMode ? 1 : 3);
         nameText.setEllipsize(TextUtils.TruncateAt.END);
+        nameText.setLineSpacing(0, 0.95f);
 
         if (isListMode) {
             int iconSize = 44;
@@ -861,6 +863,22 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * 列表里显示的名字。
+     *
+     * 配方 json 的名字通常很长（命名空间_名称_类型.json），
+     * 去掉扩展名能给名字多留一到两行，缩略图位置也更好对齐。
+     */
+    private String displayName(File file) {
+        String name = file.getName();
+        String lower = name.toLowerCase();
+        if (lower.endsWith(".json") || lower.endsWith(".lang")
+                || lower.endsWith(".mcfunction")) {
+            return name.substring(0, name.lastIndexOf('.'));
+        }
+        return name;
     }
 
     private BitmapDrawable loadPixelThumbnail(File imageFile, int targetWidth) {

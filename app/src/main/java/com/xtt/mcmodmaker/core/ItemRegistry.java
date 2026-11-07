@@ -7,41 +7,58 @@ import com.xtt.mcmodmaker.util.FileUtils;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.InputStreamReader;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
- * 物品清单：内置的原版物品表 + 当前工程里的自定义物品。
+ * 物品清单：内置的原版物品库 + 当前工程里的自定义物品 / 方块。
  *
- * 内置表来自基岩版的真实物品清单（1929 条），带官方中文名和创造模式分类。
- * 自定义物品每次扫描工程目录得到，改完物品后调用 {@link #reloadProject(File)} 刷新。
+ * 原版库按基岩版 1.21.120 生成（网易中国版当前对应的版本），
+ * 含方块与物品，带官方中文名和创造模式分类。
+ *
+ * 自定义条目来自 behavior_pack 下的 netease_items_beh 与 netease_blocks，
+ * 显示名从资源包 lang 里读 tile./item. 加完整 id 的键。
  */
 public final class ItemRegistry {
 
-    /** 一条候选：物品 id、显示名、创造模式分类。 */
+    /** 一条候选。 */
     public static final class Entry {
         public final String id;
         public final String name;
         public final String category;
-        /** 是否来自当前工程（自定义物品）。 */
+        /** 是否来自当前工程。 */
         public final boolean custom;
+        /** 是否方块（影响图标与分组显示）。 */
+        public final boolean block;
 
-        Entry(String id, String name, String category, boolean custom) {
+        Entry(String id, String name, String category, boolean custom, boolean block) {
             this.id = id;
             this.name = name;
             this.category = category;
             this.custom = custom;
+            this.block = block;
         }
 
+        /** 有中文名就用中文名，否则用 id 的短名。 */
         public String display() {
-            if (name == null || name.isEmpty()) return id;
-            return name;
+            if (name != null && !name.isEmpty()) return name;
+            return shortId(id);
+        }
+
+        /** 显示名是否与本条 id 不同（不同才值得把 id 也显示出来）。 */
+        public boolean hasDistinctName() {
+            return name != null && !name.isEmpty() && !name.equals(id);
         }
     }
+
+    /** 原版库对应的基岩版版本号，界面上要标出来。 */
+    public static final String VANILLA_VERSION = "1.21.120";
 
     private static List<Entry> vanilla;
     private static final List<Entry> custom = new ArrayList<>();
@@ -49,20 +66,23 @@ public final class ItemRegistry {
     private ItemRegistry() {
     }
 
-    /** 读内置原版清单，只做一次。 */
     private static synchronized List<Entry> vanilla(Context context) {
         if (vanilla != null) return vanilla;
         List<Entry> list = new ArrayList<>();
-        try (BufferedReader r = new BufferedReader(new InputStreamReader(
-                context.getAssets().open("vanilla_items.json"), "UTF-8"))) {
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = r.readLine()) != null) sb.append(line);
-            JSONArray arr = new JSONArray(sb.toString());
-            for (int i = 0; i < arr.length(); i++) {
-                JSONArray e = arr.optJSONArray(i);
-                if (e == null || e.length() < 3) continue;
-                list.add(new Entry(e.optString(0), e.optString(1), e.optString(2), false));
+        try (InputStream in = context.getAssets().open("vanilla_items.json")) {
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+            JSONObject root = new JSONObject(bos.toString("UTF-8"));
+            JSONArray arr = root.optJSONArray("items");
+            if (arr != null) {
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONArray e = arr.optJSONArray(i);
+                    if (e == null || e.length() < 3) continue;
+                    list.add(new Entry(e.optString(0), e.optString(1), e.optString(2),
+                            false, e.optInt(3, 0) == 1));
+                }
             }
         } catch (Exception ignored) {
         }
@@ -71,16 +91,18 @@ public final class ItemRegistry {
     }
 
     /**
-     * 扫描工程里的自定义物品并缓存。
+     * 扫描工程里的自定义物品与方块并缓存。
      *
-     * 读取 behavior_pack 下 netease_items_beh 目录里的 json 的 identifier 与 category，
-     * 显示名从 resource_pack 下 texts 目录里的 lang 文件（item.<id>.name）取。
+     * 定义文件：behavior_pack 下 netease_items_beh 与 netease_blocks 里的 json；
+     * 显示名：resource_pack 下 texts 里的 lang，键形如
+     * tile.命名空间:方块名.name 或 item.命名空间:物品名.name，
+     * 也兼容不带命名空间的写法。
      */
     public static synchronized void reloadProject(Context context, File projectDir) {
         custom.clear();
         if (projectDir == null || !projectDir.isDirectory()) return;
 
-        List<String> displayNames = readLangNames(projectDir);
+        Map<String, String> names = readLangNames(projectDir);
 
         File[] roots = projectDir.listFiles();
         if (roots == null) return;
@@ -88,38 +110,78 @@ public final class ItemRegistry {
             if (!pack.isDirectory()) continue;
             String pn = pack.getName().toLowerCase();
             if (!pn.startsWith("behavior_pack") && !pn.startsWith("behaviour_pack")) continue;
-            File itemsDir = new File(pack, "netease_items_beh");
-            File[] files = itemsDir.listFiles();
-            if (files == null) continue;
-            for (File f : files) {
-                if (!f.getName().toLowerCase().endsWith(".json")) continue;
-                Entry e = readItemFile(f, displayNames);
-                if (e != null) custom.add(e);
-            }
+            collectFrom(new File(pack, "netease_items_beh"), false, names);
+            collectFrom(new File(pack, "netease_blocks"), true, names);
         }
         Collections.sort(custom, (a, b) -> a.id.compareToIgnoreCase(b.id));
     }
 
-    private static Entry readItemFile(File f, List<String> displayNames) {
+    private static void collectFrom(File dir, boolean block, Map<String, String> names) {
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            if (!f.getName().toLowerCase().endsWith(".json")) continue;
+            Entry e = readDefinition(f, block, names);
+            if (e == null) continue;
+            // 同一 id 可能既在物品目录又在方块目录，去重
+            boolean dup = false;
+            for (Entry old : custom) {
+                if (old.id.equals(e.id)) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) custom.add(e);
+        }
+    }
+
+    private static Entry readDefinition(File f, boolean block, Map<String, String> names) {
         try {
             JSONObject root = new JSONObject(FileUtils.readText(f));
-            JSONObject item = root.optJSONObject("minecraft:item");
-            if (item == null) return null;
-            JSONObject desc = item.optJSONObject("description");
+            JSONObject def = block ? root.optJSONObject("minecraft:block")
+                    : root.optJSONObject("minecraft:item");
+            if (def == null) {
+                // 有的模板把方块写成 minecraft:block，物品写成 minecraft:item，
+                // 目录放错时互相兜一下
+                def = root.optJSONObject("minecraft:block");
+                if (def != null) block = true;
+                else {
+                    def = root.optJSONObject("minecraft:item");
+                    if (def == null) return null;
+                    block = false;
+                }
+            }
+            JSONObject desc = def.optJSONObject("description");
             if (desc == null) return null;
             String identifier = desc.optString("identifier", "");
             if (identifier.isEmpty()) return null;
             String category = desc.optString("category", "Items");
-            String name = lookupLang(displayNames, identifier);
-            return new Entry(identifier, name, category, true);
+            // 自定义方块用的小写分类名，转成界面上的统一写法
+            category = normalizeCategory(category);
+            String name = lookupName(names, identifier);
+            return new Entry(identifier, name, category, true, block);
         } catch (Exception e) {
             return null;
         }
     }
 
-    /** 把所有 lang 读成 "键=值" 的平铺列表，避免依赖具体语言文件路径。 */
-    private static List<String> readLangNames(File projectDir) {
-        List<String> out = new ArrayList<>();
+    /** 基岩版自定义方块的 category 是小写的 construction / nature，统一成原版库的写法。 */
+    private static String normalizeCategory(String c) {
+        if (c == null || c.isEmpty()) return "Items";
+        switch (c.toLowerCase()) {
+            case "construction": return "Construction";
+            case "nature": return "Nature";
+            case "equipment": return "Equipment";
+            case "items": return "Items";
+            default:
+                // 已经是首字母大写就原样返回
+                return c;
+        }
+    }
+
+    /** 读 lang：键同时收「完整 id」和「短名」两种写法，前者优先。 */
+    private static Map<String, String> readLangNames(File projectDir) {
+        Map<String, String> out = new HashMap<>();
         File[] roots = projectDir.listFiles();
         if (roots == null) return out;
         for (File pack : roots) {
@@ -130,94 +192,115 @@ public final class ItemRegistry {
             if (langs == null) continue;
             for (File l : langs) {
                 if (!l.getName().toLowerCase().endsWith(".lang")) continue;
-                try {
-                    String content = FileUtils.readText(l);
-                    if (content == null) continue;
-                    for (String line : content.split("\r?\n")) {
-                        if (line.startsWith("item.") && line.contains(".name=")) out.add(line);
+                String content = FileUtils.readText(l);
+                if (content == null || content.isEmpty()) continue;
+                if (content.startsWith("\uFEFF")) content = content.substring(1);
+                for (String line : content.split("\r?\n")) {
+                    line = line.trim();
+                    if (line.isEmpty() || line.startsWith("#")) continue;
+                    int eq = line.indexOf('=');
+                    if (eq <= 0) continue;
+                    String key = line.substring(0, eq).trim();
+                    String value = line.substring(eq + 1).trim();
+                    if (value.isEmpty()) continue;
+                    if (!(key.startsWith("tile.") || key.startsWith("item."))) continue;
+                    if (!key.endsWith(".name")) continue;
+                    String mid = key.substring(key.indexOf('.') + 1, key.length() - 5);
+                    if (mid.isEmpty()) continue;
+                    // 完整 id（带命名空间）优先，短名只作兜底
+                    if (mid.contains(":") || !out.containsKey(mid)) {
+                        out.put(mid, value);
                     }
-                } catch (Exception ignored) {
                 }
             }
         }
         return out;
     }
 
-    private static String lookupLang(List<String> lines, String identifier) {
-        String key = "item." + identifier + ".name=";
-        for (String line : lines) {
-            if (line.startsWith(key)) {
-                String v = line.substring(key.length()).trim();
-                if (!v.isEmpty()) return v;
-            }
+    private static String lookupName(Map<String, String> names, String identifier) {
+        String v = names.get(identifier);
+        if (v != null) return v;
+        int i = identifier.indexOf(':');
+        if (i >= 0) {
+            v = names.get(identifier.substring(i + 1));
+            if (v != null) return v;
         }
         return "";
     }
 
-    /** 当前工程里的自定义物品。 */
+    /** 当前工程里的自定义物品与方块。 */
     public static synchronized List<Entry> customItems() {
         return new ArrayList<>(custom);
     }
 
-    /** 找某个 id 的显示名，找不到返回 id 本身。 */
-    public static synchronized String nameOf(Context context, String id) {
-        if (id == null) return "";
-        for (Entry e : custom) {
-            if (id.equals(e.id)) return e.display();
+    /** 找某个 id 的显示名，找不到返回 id 的短名。 */
+    public static String nameOf(Context context, String id) {
+        if (id == null || id.isEmpty()) return "";
+        synchronized (ItemRegistry.class) {
+            for (Entry e : custom) {
+                if (id.equals(e.id)) return e.display();
+            }
         }
         for (Entry e : vanilla(context)) {
             if (id.equals(e.id)) return e.display();
         }
-        return id;
+        return shortId(id);
     }
 
-    /** id 是否存在（本工程或原版）。 */
-    public static synchronized boolean exists(Context context, String id) {
+    /** 这个 id 是否在清单里。 */
+    public static boolean exists(Context context, String id) {
         if (id == null || id.isEmpty()) return false;
-        for (Entry e : custom) if (id.equals(e.id)) return true;
+        synchronized (ItemRegistry.class) {
+            for (Entry e : custom) if (id.equals(e.id)) return true;
+        }
         for (Entry e : vanilla(context)) if (id.equals(e.id)) return true;
         return false;
     }
 
     /**
-     * 搜索候选。空查询时返回「本项目自定义物品 + 分类靠前的原版物品」，
-     * 便于一打开就有东西可点。
+     * 搜索候选。
      *
-     * 排序规则：自定义物品优先，其次 id 前缀匹配，再次显示名前缀匹配，
-     * 再次包含匹配。
+     * 排序：自定义条目优先（本工程的东西最常选），其次 id 前缀、名称前缀、包含。
+     * 空查询时给自定义 + 分类为 Items 的原版条目，保证一打开就有东西可点。
      */
     public static List<Entry> search(Context context, String query, int limit) {
-        List<Entry> pool = new ArrayList<>();
-        synchronized (ItemRegistry.class) {
-            pool.addAll(custom);
-        }
+        List<Entry> mine = customItems();
+        List<Entry> pool = new ArrayList<>(mine);
         pool.addAll(vanilla(context));
 
         String q = query == null ? "" : query.trim().toLowerCase();
         List<Entry> out = new ArrayList<>();
         if (q.isEmpty()) {
-            for (Entry e : pool) {
-                if (e.custom || "Items".equals(e.category)) out.add(e);
+            out.addAll(mine);
+            for (Entry e : vanilla(context)) {
+                if ("Items".equals(e.category)) out.add(e);
                 if (out.size() >= limit) break;
             }
-            if (out.isEmpty()) out.addAll(pool.subList(0, Math.min(limit, pool.size())));
+            if (out.isEmpty()) {
+                out.addAll(pool.subList(0, Math.min(limit, pool.size())));
+            }
             return out;
         }
 
-        List<Entry> tier1 = new ArrayList<>();
-        List<Entry> tier2 = new ArrayList<>();
-        List<Entry> tier3 = new ArrayList<>();
+        List<Entry> t1 = new ArrayList<>();
+        List<Entry> t2 = new ArrayList<>();
+        List<Entry> t3 = new ArrayList<>();
         for (Entry e : pool) {
             String id = e.id.toLowerCase();
             String nm = e.name == null ? "" : e.name.toLowerCase();
-            String shortId = id.startsWith("minecraft:") ? id.substring(10) : id;
-            if (id.startsWith(q) || shortId.startsWith(q)) tier1.add(e);
-            else if (nm.startsWith(q)) tier2.add(e);
-            else if (id.contains(q) || nm.contains(q)) tier3.add(e);
+            String sid = shortId(id);
+            if (id.startsWith(q) || sid.startsWith(q)) t1.add(e);
+            else if (nm.startsWith(q)) t2.add(e);
+            else if (id.contains(q) || nm.contains(q)) t3.add(e);
         }
-        out.addAll(tier1);
-        out.addAll(tier2);
-        out.addAll(tier3);
+        out.addAll(t1);
+        out.addAll(t2);
+        out.addAll(t3);
         return out.size() > limit ? new ArrayList<>(out.subList(0, limit)) : out;
+    }
+
+    private static String shortId(String id) {
+        if (id == null) return "";
+        return id.startsWith("minecraft:") ? id.substring(10) : id;
     }
 }

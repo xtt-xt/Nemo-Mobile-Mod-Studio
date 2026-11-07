@@ -104,10 +104,19 @@ public final class ItemPickerDialog {
             content.addView(cur);
         }
 
+        // 常驻显示原版物品库对应的游戏版本，避免用户不知道库是哪一版的
+        OreTextView libInfo = new OreTextView(context);
+        libInfo.setText("原版物品库 · 基岩版 " + ItemRegistry.VANILLA_VERSION
+                + "　　本工程自定义 " + ItemRegistry.customItems().size() + " 项");
+        libInfo.setTextColor(Color.parseColor("#7A9A7A"));
+        libInfo.setTextSize(9);
+        libInfo.setPadding(UiUtils.dp(context, 6), UiUtils.dp(context, 6), 0, 0);
+        content.addView(libInfo);
+
         statusText = new OreTextView(context);
         statusText.setTextColor(Color.parseColor("#AAAAAA"));
         statusText.setTextSize(10);
-        statusText.setPadding(UiUtils.dp(context, 6), UiUtils.dp(context, 6), 0, UiUtils.dp(context, 2));
+        statusText.setPadding(UiUtils.dp(context, 6), UiUtils.dp(context, 4), 0, UiUtils.dp(context, 2));
         content.addView(statusText);
 
         ScrollView scroll = new ScrollView(context);
@@ -121,13 +130,13 @@ public final class ItemPickerDialog {
         builder.getRootLayout().addView(content,
                 new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        builder.setNeutralButton("手动输入", new DialogInterface.OnClickListener() {
+        builder.setNeutralButton("手动输入", StyleSheet.STYLE_DARK_GRAY, new DialogInterface.OnClickListener() {
             @Override
             public void onClick(DialogInterface d, int which) {
                 showManualInput();
             }
         });
-        builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+        builder.setNegativeButton("关闭", StyleSheet.STYLE_DARK_GRAY, new DialogInterface.OnClickListener() {
             @Override
             public void onClick(DialogInterface d, int which) {
                 d.dismiss();
@@ -168,7 +177,7 @@ public final class ItemPickerDialog {
 
         if (all.isEmpty()) {
             OreTextView empty = new OreTextView(context);
-            empty.setText("没有匹配的物品");
+            empty.setText("没有匹配的物品，可以点「手动输入」直接填 id");
             empty.setTextColor(Color.parseColor("#AAAAAA"));
             empty.setTextSize(11);
             empty.setGravity(Gravity.CENTER);
@@ -204,7 +213,7 @@ public final class ItemPickerDialog {
 
         OreTextView name = new OreTextView(context);
         name.setText(entry.display());
-        name.setTextColor(Color.WHITE);
+        name.setTextColor(entry.custom ? Color.parseColor("#9BE89B") : Color.WHITE);
         name.setTextSize(12);
         name.setMaxLines(1);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -212,13 +221,31 @@ public final class ItemPickerDialog {
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         row.addView(name);
 
-        OreTextView idText = new OreTextView(context);
-        String suffix = entry.custom ? "  ·本工程" : "";
-        idText.setText(shortId(entry.id) + suffix);
-        idText.setTextColor(entry.custom ? Color.parseColor("#7ED17E") : Color.parseColor("#8A8A8A"));
-        idText.setTextSize(9);
-        idText.setMaxLines(1);
-        row.addView(idText);
+        // 名字和 id 相同就没必要重复；有中文名时把 id 用小字附上便于核对
+        if (entry.hasDistinctName() || entry.custom) {
+            OreTextView idText = new OreTextView(context);
+            idText.setText(shortId(entry.id));
+            idText.setTextColor(Color.parseColor("#7A7A7A"));
+            idText.setTextSize(9);
+            idText.setMaxLines(1);
+            idText.setEllipsize(android.text.TextUtils.TruncateAt.START);
+            LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            ilp.leftMargin = UiUtils.dp(context, 6);
+            idText.setLayoutParams(ilp);
+            row.addView(idText);
+        }
+
+        OreTextView kind = new OreTextView(context);
+        kind.setText(entry.custom ? "本工程" : (entry.block ? "方块" : "物品"));
+        kind.setTextColor(entry.custom ? Color.parseColor("#E0C060")
+                : (entry.block ? Color.parseColor("#8AA8C0") : Color.parseColor("#8A8A8A")));
+        kind.setTextSize(8);
+        LinearLayout.LayoutParams klp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        klp.leftMargin = UiUtils.dp(context, 8);
+        kind.setLayoutParams(klp);
+        row.addView(kind);
 
         card.addView(row);
         card.setOnClickListener(new View.OnClickListener() {

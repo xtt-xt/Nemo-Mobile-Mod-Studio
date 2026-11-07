@@ -9,8 +9,11 @@ import android.text.InputType;
 import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import com.xtt.mcmodmaker.core.ItemRef;
@@ -108,11 +111,15 @@ public class RecipeEditor {
         btnDelete.setText("删除配方");
         btnDelete.setStyleSheet(StyleSheet.STYLE_RED);
 
-        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        btnVisual.setLayoutParams(bp);
-        btnSource.setLayoutParams(bp);
-        btnDelete.setLayoutParams(bp);
+        btnVisual.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        btnSource.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams delParams = new LinearLayout.LayoutParams(
+                UiUtils.dp(context, 52), LinearLayout.LayoutParams.WRAP_CONTENT);
+        delParams.leftMargin = UiUtils.dp(context, 4);
+        btnDelete.setLayoutParams(delParams);
+        btnDelete.setText("删除");
 
         modeBar.addView(btnVisual);
         modeBar.addView(btnSource);
@@ -258,17 +265,27 @@ public class RecipeEditor {
         OreTextView title = new OreTextView(context);
         title.setText(model.localName().isEmpty() ? "（未命名配方）" : model.localName());
         title.setTextColor(Color.WHITE);
-        title.setTextSize(14);
+        title.setTextSize(15);
         title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setMaxLines(1);
+        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
         box.addView(title);
 
         OreTextView meta = new OreTextView(context);
-        meta.setText(model.typeName() + "  ·  " + model.identifier
-                + "  ·  format_version " + model.formatVersion);
+        meta.setText(model.typeName() + "　·　format_version " + model.formatVersion);
         meta.setTextColor(Color.parseColor("#9A9A9A"));
-        meta.setTextSize(9);
-        meta.setPadding(0, UiUtils.dp(context, 2), 0, 0);
+        meta.setTextSize(10);
+        meta.setPadding(0, UiUtils.dp(context, 3), 0, 0);
         box.addView(meta);
+
+        OreTextView ident = new OreTextView(context);
+        ident.setText(model.identifier);
+        ident.setTextColor(Color.parseColor("#6A6A6A"));
+        ident.setTextSize(9);
+        ident.setMaxLines(1);
+        ident.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+        ident.setPadding(0, UiUtils.dp(context, 1), 0, 0);
+        box.addView(ident);
         return box;
     }
 
@@ -308,6 +325,7 @@ public class RecipeEditor {
         if (issueContainer == null || model == null) return;
         issueContainer.removeAllViews();
         List<String> errs = model.validate();
+        errs.addAll(unknownIdWarnings());
         if (errs.isEmpty()) return;
         OreAlert alert = new OreAlert(context);
         alert.setStyleSheet(StyleSheet.STYLE_ALERT_YELLOW);
@@ -319,6 +337,46 @@ public class RecipeEditor {
         alert.setText(sb.toString());
         issueContainer.addView(alert);
         UiUtils.addGap(context, issueContainer, UiUtils.dp(context, 6));
+    }
+
+    /**
+     * 找出引用了、但在原版库与本工程里都查不到的 id。
+     *
+     * 这类 id 游戏里不会报错，只是安静地不生效，所以必须在这里点出来。
+     */
+    private List<String> unknownIdWarnings() {
+        List<String> out = new ArrayList<>();
+        List<ItemRef> refs = new ArrayList<>();
+        if (model.type == RecipeModel.SHAPED) {
+            refs.addAll(model.key.values());
+        } else if (model.type == RecipeModel.SHAPELESS) {
+            refs.addAll(model.ingredients);
+        } else if (model.type == RecipeModel.FURNACE) {
+            refs.add(model.furnaceInput);
+            refs.add(model.furnaceOutput);
+        } else if (model.type == RecipeModel.BREWING) {
+            refs.add(model.brewInput);
+            refs.add(model.brewReagent);
+            refs.add(model.brewOutput);
+        } else if (model.type == RecipeModel.SMITHING) {
+            refs.add(model.smithTemplate);
+            refs.add(model.smithBase);
+            refs.add(model.smithAddition);
+            refs.add(model.smithResult);
+        }
+        refs.add(model.result);
+        refs.addAll(model.unlockItems);
+
+        List<String> seen = new ArrayList<>();
+        for (ItemRef r : refs) {
+            if (r == null || r.isEmpty()) continue;
+            if (seen.contains(r.id)) continue;
+            seen.add(r.id);
+            if (!ItemRegistry.exists(context, r.id)) {
+                out.add("找不到物品 " + r.id + "，游戏里会静默失效");
+            }
+        }
+        return out;
     }
 
     private void changed() {
@@ -333,28 +391,51 @@ public class RecipeEditor {
         LinearLayout grid = new LinearLayout(context);
         grid.setOrientation(LinearLayout.VERTICAL);
 
+        int m = UiUtils.dp(context, 3);
         for (int r = 0; r < 3; r++) {
             LinearLayout row = new LinearLayout(context);
             row.setOrientation(LinearLayout.HORIZONTAL);
             for (int c = 0; c < 3; c++) {
                 final int rr = r;
                 final int cc = c;
-                OreButton cell = new OreButton(context);
-                cell.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-                cell.setMaxLines(1);
-                cell.setEllipsize(android.text.TextUtils.TruncateAt.END);
+
+                // 格子 = 按钮铺满 + 右上角字母角标
+                FrameLayout wrapper = new FrameLayout(context);
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                         0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-                int m = UiUtils.dp(context, 2);
                 lp.setMargins(m, m, m, m);
-                cell.setLayoutParams(lp);
+                wrapper.setLayoutParams(lp);
+
+                OreButton cell = new OreButton(context);
+                FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.WRAP_CONTENT);
+                cell.setLayoutParams(clp);
+                cell.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+                cell.setMaxLines(2);
+                cell.setMinHeight(UiUtils.dp(context, 54));
                 cell.setOnClickListener(new View.OnClickListener() {
                     @Override public void onClick(View v) {
                         onCellClick(rr, cc);
                     }
                 });
                 cells[r][c] = cell;
-                row.addView(cell);
+                wrapper.addView(cell);
+
+                TextView badge = new TextView(context);
+                badge.setTag("badge");
+                badge.setTextSize(8);
+                badge.setTextColor(Color.parseColor("#E8E8E8"));
+                badge.setGravity(Gravity.CENTER);
+                badge.setPadding(UiUtils.dp(context, 4), 0, UiUtils.dp(context, 4), 0);
+                badge.setBackgroundColor(Color.parseColor("#99303030"));
+                FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.WRAP_CONTENT, UiUtils.dp(context, 13),
+                        Gravity.END | Gravity.TOP);
+                badge.setLayoutParams(blp);
+                wrapper.addView(badge);
+
+                row.addView(wrapper);
             }
             grid.addView(row);
         }
@@ -364,7 +445,7 @@ public class RecipeEditor {
         keySummary.setOrientation(LinearLayout.VERTICAL);
         LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        sp.topMargin = UiUtils.dp(context, 8);
+        sp.topMargin = UiUtils.dp(context, 10);
         keySummary.setLayoutParams(sp);
         parent.addView(keySummary);
 
@@ -381,18 +462,42 @@ public class RecipeEditor {
                 if (cell == null) continue;
                 char letter = c < rowStr.length() ? rowStr.charAt(c) : ' ';
                 if (letter == ' ') {
-                    cell.setText("空");
+                    cell.setText("＋");
                     cell.setStyleSheet(StyleSheet.STYLE_INACTIVATED);
+                    cell.setTextColor(Color.parseColor("#8A8A8A"));
                 } else {
                     ItemRef item = model.key.get(letter);
-                    String name = item == null || item.isEmpty()
-                            ? "未指定" : ItemRegistry.nameOf(context, item.id);
-                    cell.setText(letter + " " + shorten(name, 6));
+                    if (item == null || item.isEmpty()) {
+                        cell.setText("未指定");
+                        cell.setTextColor(Color.parseColor("#E0A030"));
+                    } else {
+                        cell.setText(ItemRegistry.nameOf(context, item.id));
+                        cell.setTextColor(Color.WHITE);
+                    }
                     cell.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
                 }
+                setBadge(cell, letter == ' ' ? null : String.valueOf(letter));
             }
         }
         renderKeySummary();
+    }
+
+    /** 设置格子右上角的字母角标；null 表示隐藏。 */
+    private void setBadge(OreButton cell, String label) {
+        View parent = (View) cell.getParent();
+        if (!(parent instanceof ViewGroup)) return;
+        ViewGroup vg = (ViewGroup) parent;
+        for (int i = 0; i < vg.getChildCount(); i++) {
+            View child = vg.getChildAt(i);
+            if (!(child instanceof TextView) || !"badge".equals(child.getTag())) continue;
+            if (label == null) {
+                child.setVisibility(View.GONE);
+            } else {
+                ((TextView) child).setText(label);
+                child.setVisibility(View.VISIBLE);
+            }
+            return;
+        }
     }
 
     private void renderKeySummary() {
@@ -401,33 +506,107 @@ public class RecipeEditor {
 
         List<Character> letters = model.usedLetters();
         if (letters.isEmpty()) {
-            OreTextView hint = new OreTextView(context);
-            hint.setText("点上面的空格子放材料，字母会自动分配");
-            hint.setTextColor(Color.parseColor("#8A8A8A"));
-            hint.setTextSize(10);
-            keySummary.addView(hint);
+            keySummary.addView(hintText("点上面的格子放材料"));
             return;
         }
 
         for (final Character letter : letters) {
-            final ItemRef item = model.key.get(letter);
-            OreTextView line = new OreTextView(context);
-            String name = item == null || item.isEmpty()
-                    ? "（未指定物品）" : ItemRegistry.nameOf(context, item.id);
-            String idText = item == null || item.isEmpty() ? "" : "  " + shortId(item);
-            line.setText(letter + "  →  " + name + idText);
-            line.setTextColor(item == null || item.isEmpty()
-                    ? Color.parseColor("#E0A030") : Color.parseColor("#CCCCCC"));
-            line.setTextSize(10);
-            line.setPadding(UiUtils.dp(context, 6), UiUtils.dp(context, 4),
-                    UiUtils.dp(context, 6), UiUtils.dp(context, 4));
-            line.setOnClickListener(new View.OnClickListener() {
+            keySummary.addView(materialRow(letter, model.key.get(letter), new View.OnClickListener() {
                 @Override public void onClick(View v) {
                     showLetterMenu(letter);
                 }
-            });
-            keySummary.addView(line);
+            }));
+            UiUtils.addGap(context, keySummary, UiUtils.dp(context, 3));
         }
+    }
+
+    /**
+     * 一条材料行：[字母] [名字] [id]。
+     *
+     * 名字和 id 相同（清单里没有中文名）时只显示一次，避免
+     * 「xxx:yyy  xxx:yyy」这种重复。
+     */
+    private View materialRow(char letter, ItemRef item, View.OnClickListener onClick) {
+        LinearLayout row = new LinearLayout(context);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, UiUtils.dp(context, 2), 0, UiUtils.dp(context, 2));
+        row.setOnClickListener(onClick);
+
+        boolean missing = item == null || item.isEmpty();
+
+        TextView key = new TextView(context);
+        key.setText(String.valueOf(letter));
+        key.setTextSize(11);
+        key.setGravity(Gravity.CENTER);
+        key.setTextColor(Color.WHITE);
+        key.setTypeface(Typeface.DEFAULT_BOLD);
+        key.setBackgroundColor(Color.parseColor("#4A4A4A"));
+        LinearLayout.LayoutParams klp = new LinearLayout.LayoutParams(
+                UiUtils.dp(context, 20), UiUtils.dp(context, 20));
+        klp.rightMargin = UiUtils.dp(context, 8);
+        key.setLayoutParams(klp);
+        row.addView(key);
+
+        if (missing) {
+            OreTextView name = new OreTextView(context);
+            name.setText("未指定物品，点击选择");
+            name.setTextColor(Color.parseColor("#E0A030"));
+            name.setTextSize(11);
+            name.setLayoutParams(new LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            row.addView(name);
+            return row;
+        }
+
+        String display = ItemRegistry.nameOf(context, item.id);
+        ItemRegistry.Entry entry = findEntry(item.id);
+        boolean distinct = entry != null ? entry.hasDistinctName() : !display.equals(shortId(item));
+
+        OreTextView name = new OreTextView(context);
+        name.setText(display);
+        name.setTextColor(Color.parseColor("#DDDDDD"));
+        name.setTextSize(11);
+        name.setMaxLines(1);
+        name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        name.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(name);
+
+        if (distinct) {
+            OreTextView idText = new OreTextView(context);
+            idText.setText(shortId(item));
+            idText.setTextColor(Color.parseColor("#7A7A7A"));
+            idText.setTextSize(9);
+            idText.setMaxLines(1);
+            idText.setEllipsize(android.text.TextUtils.TruncateAt.START);
+            LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            ilp.leftMargin = UiUtils.dp(context, 8);
+            idText.setLayoutParams(ilp);
+            row.addView(idText);
+        }
+
+        if (item.hasData()) {
+            OreTextView dataText = new OreTextView(context);
+            dataText.setText("data " + item.data);
+            dataText.setTextColor(Color.parseColor("#7ED17E"));
+            dataText.setTextSize(9);
+            LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            dlp.leftMargin = UiUtils.dp(context, 8);
+            dataText.setLayoutParams(dlp);
+            row.addView(dataText);
+        }
+        return row;
+    }
+
+    /** 从两份清单里找条目，用于判断有没有独立中文名与是不是方块。 */
+    private ItemRegistry.Entry findEntry(String id) {
+        for (ItemRegistry.Entry e : ItemRegistry.customItems()) {
+            if (e.id.equals(id)) return e;
+        }
+        return null;
     }
 
     private void onCellClick(final int row, final int col) {
@@ -456,21 +635,22 @@ public class RecipeEditor {
         OreDialogBuilder b = new OreDialogBuilder(context);
         b.setTitle("第 " + (row + 1) + " 行 第 " + (col + 1) + " 列");
         b.setView(box);
-        b.addButton("更换物品", new DialogInterface.OnClickListener() {
+        b.setButtonOrientation(LinearLayout.HORIZONTAL);
+        b.setNegativeButton("取消", StyleSheet.STYLE_DARK_GRAY, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+            }
+        });
+        b.addButton("更换物品", StyleSheet.STYLE_GREEN, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface d, int which) {
                 d.dismiss();
                 pickForCell(row, col);
             }
         });
-        b.addButton("清空这一格", StyleSheet.STYLE_RED, new DialogInterface.OnClickListener() {
+        b.addButton("清空", StyleSheet.STYLE_RED, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface d, int which) {
                 d.dismiss();
                 clearCell(row, col);
-            }
-        });
-        b.setNegativeButton("取消", new DialogInterface.OnClickListener() {
-            @Override public void onClick(DialogInterface d, int which) {
-                d.dismiss();
             }
         });
         b.show();
@@ -519,7 +699,8 @@ public class RecipeEditor {
         OreDialogBuilder b = new OreDialogBuilder(context);
         b.setTitle("材料 " + letter);
         b.setView(box);
-        b.addButton("更换物品", new DialogInterface.OnClickListener() {
+        b.setButtonOrientation(LinearLayout.HORIZONTAL);
+        b.addButton("更换", StyleSheet.STYLE_GREEN, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface d, int which) {
                 d.dismiss();
                 ItemPickerDialog.show(context, "选择 " + letter + " 的物品", item,
@@ -532,7 +713,7 @@ public class RecipeEditor {
                         });
             }
         });
-        b.addButton("改附加值", new DialogInterface.OnClickListener() {
+        b.addButton("附加值", StyleSheet.STYLE_DARK_GRAY, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface d, int which) {
                 d.dismiss();
                 showDataEditor(item, new ItemSetter() {
@@ -544,7 +725,7 @@ public class RecipeEditor {
                 });
             }
         });
-        b.addButton("清空该材料的所有格子", StyleSheet.STYLE_RED, new DialogInterface.OnClickListener() {
+        b.addButton("全部清空", StyleSheet.STYLE_RED, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface d, int which) {
                 d.dismiss();
                 for (int r = 0; r < 3; r++) {
@@ -560,7 +741,7 @@ public class RecipeEditor {
                 changed();
             }
         });
-        b.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+        b.setNegativeButton("取消", StyleSheet.STYLE_DARK_GRAY, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface d, int which) {
                 d.dismiss();
             }
@@ -822,14 +1003,17 @@ public class RecipeEditor {
     private void bindItem(OreButton btn, ItemRef item) {
         btn.setTag(item);
         if (item == null || item.isEmpty()) {
-            btn.setText("未设置  点我选择");
+            btn.setText("点我选择物品");
+            btn.setTextColor(Color.parseColor("#8A8A8A"));
             btn.setStyleSheet(StyleSheet.STYLE_INACTIVATED);
             return;
         }
-        String name = ItemRegistry.nameOf(context, item.id);
-        StringBuilder sb = new StringBuilder(name);
-        if (!name.equals(item.id)) sb.append("  ").append(shortId(item));
-        if (item.hasData()) sb.append("  data=").append(item.data);
+        btn.setTextColor(Color.WHITE);
+        String display = ItemRegistry.nameOf(context, item.id);
+        StringBuilder sb = new StringBuilder(display);
+        // 只有在确实有别于短 id 的中文名时才补 id，避免重复两遍同一个串
+        if (!display.equals(shortId(item))) sb.append("   ").append(shortId(item));
+        if (item.hasData()) sb.append("   data ").append(item.data);
         btn.setText(sb.toString());
         btn.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
     }
@@ -990,12 +1174,11 @@ public class RecipeEditor {
         LinearLayout box = new LinearLayout(context);
         box.setOrientation(LinearLayout.VERTICAL);
 
-        OreTextView btn = new OreTextView(context);
+        OreButton btn = new OreButton(context);
         btn.setText(unlockLabel(model.unlockMode));
-        btn.setTextColor(Color.WHITE);
-        btn.setTextSize(11);
-        btn.setPadding(UiUtils.dp(context, 8), UiUtils.dp(context, 8),
-                UiUtils.dp(context, 8), UiUtils.dp(context, 8));
+        btn.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+        btn.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         btn.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 showUnlockMenu();
@@ -1048,11 +1231,16 @@ public class RecipeEditor {
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(UiUtils.dp(context, 6), UiUtils.dp(context, 6),
                 UiUtils.dp(context, 6), UiUtils.dp(context, 6));
+        OreTextView tip = new OreTextView(context);
+        tip.setText("当前：" + currentUnlockLabel());
+        tip.setTextColor(Color.parseColor("#9A9A9A"));
+        tip.setTextSize(10);
+        box.addView(tip);
 
         OreDialogBuilder b = new OreDialogBuilder(context);
         b.setTitle("解锁方式");
         b.setView(box);
-        b.addButton("默认解锁（始终可见）", new DialogInterface.OnClickListener() {
+        b.addButton("默认解锁（始终可见）", StyleSheet.STYLE_GREEN, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface d, int which) {
                 d.dismiss();
                 model.unlockMode = RecipeModel.UNLOCK_ALWAYS;
@@ -1060,7 +1248,7 @@ public class RecipeEditor {
                 changed();
             }
         });
-        b.addButton("获得特定物品时解锁", new DialogInterface.OnClickListener() {
+        b.addButton("获得特定物品时解锁", StyleSheet.STYLE_DARK_GRAY, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface d, int which) {
                 d.dismiss();
                 model.unlockMode = RecipeModel.UNLOCK_ITEMS;
@@ -1069,7 +1257,7 @@ public class RecipeEditor {
                 changed();
             }
         });
-        b.addButton("玩家在水中时解锁", new DialogInterface.OnClickListener() {
+        b.addButton("玩家在水中时解锁", StyleSheet.STYLE_DARK_GRAY, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface d, int which) {
                 d.dismiss();
                 model.unlockMode = RecipeModel.UNLOCK_WATER;
@@ -1085,12 +1273,16 @@ public class RecipeEditor {
                 changed();
             }
         });
-        b.setNegativeButton("取消", new DialogInterface.OnClickListener() {
-            @Override public void onClick(DialogInterface d, int which) {
-                d.dismiss();
-            }
-        });
         b.show();
+    }
+
+    private String currentUnlockLabel() {
+        switch (model.unlockMode) {
+            case RecipeModel.UNLOCK_ITEMS: return "获得特定物品时解锁";
+            case RecipeModel.UNLOCK_WATER: return "玩家在水中时解锁";
+            case RecipeModel.UNLOCK_NONE: return "不写解锁字段";
+            default: return "默认解锁";
+        }
     }
 
     private static String unlockLabel(int mode) {
