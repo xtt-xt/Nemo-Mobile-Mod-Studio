@@ -33,6 +33,7 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.documentfile.provider.DocumentFile;
 
+import com.xtt.mcmodmaker.net.DevAuth;
 import com.xtt.mcmodmaker.net.McDevApi;
 import com.xtt.mcmodmaker.core.Constants;
 import com.xtt.mcmodmaker.core.ProjectManager;
@@ -109,6 +110,15 @@ public class MainActivity extends Activity {
             getWindow().setNavigationBarColor(Color.parseColor("#1A1A1A"));
         }
 
+        // 旧版本把 Cookie 明文写在 settings.json 里，先搬进加密文件再抹掉
+        DevAuth.migrateFromLegacy(this,
+                settings.getString(Constants.PREFS_MC_COOKIE, ""),
+                settings.getString(Constants.PREFS_MC_EMAIL, ""));
+        if (!DevAuth.cookie(this).isEmpty()) {
+            settings.remove(Constants.PREFS_MC_COOKIE);
+            settings.remove(Constants.PREFS_MC_EMAIL);
+        }
+
         buildUi();
         setupManagerPage();
         showTab(0);
@@ -122,6 +132,7 @@ public class MainActivity extends Activity {
 
         // ===== 标题 =====
         OreTextView tvTitle = new OreTextView(this);
+        titleView = tvTitle;
         tvTitle.setText("模组制作器");
         tvTitle.setTextSize(24);
         tvTitle.setTextColor(Color.WHITE);
@@ -391,13 +402,6 @@ public class MainActivity extends Activity {
     // ==================== 设置页 ====================
     private void showSettingsPage() {
         aboutContainer.removeAllViews();
-        OreTextView title = new OreTextView(this);
-        title.setText("设置");
-        title.setTextColor(Color.WHITE);
-        title.setTextSize(16);
-        title.setGravity(Gravity.CENTER);
-        aboutContainer.addView(title);
-        UiUtils.addGap(this, aboutContainer, 16);
         // 关于分栏
         aboutContainer.addView(settingsCard("关于", "版本信息、开源地址、开源鸣谢", AboutActivity.class));
         // 代码高亮分栏
@@ -1688,6 +1692,8 @@ public class MainActivity extends Activity {
     private OreEditText pwdInput;
     private OreTextView managerStatusText;
     private OreButton addWorkBtn;
+    /** 左上角标题，随分页切换文字。 */
+    private OreTextView titleView;
 
     private void setupManagerPage() {
         if (managerInitialized) return;
@@ -1702,14 +1708,6 @@ public class MainActivity extends Activity {
                 (int) (6 * getResources().getDisplayMetrics().density)));
         downloadTargetDir = new File(Constants.DOWNLOAD_DIR);
         if (!downloadTargetDir.exists()) downloadTargetDir.mkdirs();
-
-        // 顶部标题
-        OreTextView title = new OreTextView(this);
-        title.setText("开发者内容管理");
-        title.setTextColor(Color.WHITE);
-        title.setTextSize(18);
-        managerContainer.addView(title);
-        UiUtils.addGap(this, managerContainer, 4);
 
         // 登录状态
         managerStatusText = new OreTextView(this);
@@ -1848,20 +1846,49 @@ public class MainActivity extends Activity {
     }
 
     private void refreshLoginState() {
-        final String cookie = settings.getString(Constants.PREFS_MC_COOKIE, "");
-        final String email = settings.getString(Constants.PREFS_MC_EMAIL, "");
+        final DevAuth auth = DevAuth.load(this);
+        final String cookie = auth == null ? "" : auth.cookie;
+        final String email = auth == null ? "" : auth.email;
         if (cookie == null || cookie.isEmpty()) {
             managerStatusText.setText("未登录");
             managerLoginBox.setVisibility(View.VISIBLE);
             if (addWorkBtn != null) addWorkBtn.setVisibility(View.GONE);
             managerListContainer.removeAllViews();
             addEmptyTip("登录后查看你的作品");
+            // 存过账号就把邮箱填回去，省得再敲一遍
+            if (auth != null && !auth.email.isEmpty() && emailInput != null) {
+                emailInput.setText(auth.email);
+            }
+            if (auth != null && auth.canAutoLogin() && pwdInput != null) {
+                managerStatusText.setText("正在用已保存的账号重新登录...");
+                autoRelogin(auth, new Runnable() {
+                    @Override public void run() { refreshLoginState(); }
+                });
+            }
         } else {
             managerLoginBox.setVisibility(View.GONE);
             if (addWorkBtn != null) addWorkBtn.setVisibility(View.VISIBLE);
-            managerStatusText.setText("已登录" + (email != null && !email.isEmpty() ? "：" + email : ""));
+            managerStatusText.setText("已登录" + (email.isEmpty() ? "" : "：" + email));
             refreshWorks();
         }
+    }
+
+    /**
+     * 用已保存的账号密码重新登录。
+     *
+     * 只在线程里跑，成功后把新 Cookie 写回加密文件再回调。
+     */
+    private void autoRelogin(final DevAuth auth, final Runnable onDone) {
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final String cookie = McDevApi.login(auth.email, auth.password);
+                if (cookie != null && !cookie.isEmpty()) {
+                    auth.cookie = cookie;
+                    DevAuth.save(MainActivity.this, auth);
+                }
+                UiUtils.runOnUiThread(onDone);
+            }
+        }).start();
     }
 
     private void doLogin() {
@@ -1878,8 +1905,16 @@ public class MainActivity extends Activity {
                 UiUtils.runOnUiThread(new Runnable() {
                     @Override public void run() {
                         if (cookie != null && !cookie.isEmpty()) {
-                            settings.putString(Constants.PREFS_MC_COOKIE, cookie);
-                                    settings.putString(Constants.PREFS_MC_EMAIL, email);
+                            // 账号密码一起存下来，登录失效时能自动重登
+                            DevAuth auth = new DevAuth();
+                            auth.email = email;
+                            auth.password = pwd;
+                            auth.cookie = cookie;
+                            DevAuth.save(MainActivity.this, auth);
+                            // 明文那份不再保留
+                            settings.remove(Constants.PREFS_MC_COOKIE);
+                            settings.remove(Constants.PREFS_MC_EMAIL);
+                            pwdInput.setText("");
                             UiUtils.toast(MainActivity.this, "登录成功");
                             refreshLoginState();
                         } else {
@@ -1914,8 +1949,13 @@ public class MainActivity extends Activity {
                                 UiUtils.runOnUiThread(new Runnable() {
                                     @Override public void run() {
                                         if (ok) {
-                                            settings.putString(Constants.PREFS_MC_COOKIE, cookie);
-                                                    settings.putString(Constants.PREFS_MC_EMAIL, "Cookie 登录");
+                                            // 只换 Cookie，原来的账号密码留着，失效后还能自动重登
+                                            DevAuth auth = DevAuth.load(MainActivity.this);
+                                            if (auth == null) auth = new DevAuth();
+                                            auth.cookie = cookie;
+                                            DevAuth.save(MainActivity.this, auth);
+                                            settings.remove(Constants.PREFS_MC_COOKIE);
+                                            settings.remove(Constants.PREFS_MC_EMAIL);
                                             UiUtils.toast(MainActivity.this, "Cookie 有效，已登录");
                                             refreshLoginState();
                                         } else {
@@ -1931,14 +1971,18 @@ public class MainActivity extends Activity {
     }
 
     private void doLogout() {
+        DevAuth.clear(this);
         settings.remove(Constants.PREFS_MC_COOKIE);
         settings.remove(Constants.PREFS_MC_EMAIL);
-        UiUtils.toast(this, "已退出登录");
+        if (emailInput != null) emailInput.setText("");
+        if (pwdInput != null) pwdInput.setText("");
+        UiUtils.toast(this, "已退出登录，保存的账号密码一并清除");
         refreshLoginState();
     }
 
     private void refreshWorks() {
-        final String cookie = settings.getString(Constants.PREFS_MC_COOKIE, "");
+        final DevAuth saved = DevAuth.load(this);
+        final String cookie = saved == null ? "" : saved.cookie;
         if (cookie == null || cookie.isEmpty()) return;
         managerStatusText.setText("加载作品中...");
         new Thread(new Runnable() {
@@ -1950,23 +1994,46 @@ public class MainActivity extends Activity {
                 } catch (Exception e) {
                     loadError = e.getMessage();
                 }
+
+                // Cookie 失效但存着账号密码：自动重登一次再试，用户感觉不到中断
+                boolean relogged = false;
+                if (loadError != null && loadError.contains("Cookie已失效")
+                        && saved != null && saved.canAutoLogin()) {
+                    String fresh = McDevApi.login(saved.email, saved.password);
+                    if (fresh != null && !fresh.isEmpty()) {
+                        saved.cookie = fresh;
+                        DevAuth.save(MainActivity.this, saved);
+                        relogged = true;
+                        loadError = null;
+                        loadedWorks = null;
+                        try {
+                            loadedWorks = McDevApi.getWorks(fresh);
+                        } catch (Exception e) {
+                            loadError = e.getMessage();
+                        }
+                    }
+                }
+
                 final java.util.List<McDevApi.WorkItem> works = loadedWorks;
                 final String error = loadError;
+                final boolean autoRelogged = relogged;
                 UiUtils.runOnUiThread(new Runnable() {
                     @Override public void run() {
                         if (error != null) {
-                            // getWorks 明确报告 Cookie 失效时，清除本地登录状态并恢复登录界面。
+                            // 自动重登也救不回来，才真的退回登录界面
                             if (error.contains("Cookie已失效")) {
+                                DevAuth.clear(MainActivity.this);
                                 settings.remove(Constants.PREFS_MC_COOKIE);
                                 settings.remove(Constants.PREFS_MC_EMAIL);
                                 refreshLoginState();
-                                managerStatusText.setText("Cookie 已失效，请重新登录");
+                                managerStatusText.setText("登录已失效，请重新登录");
                             } else {
                                 managerStatusText.setText(error.isEmpty() ? "加载作品失败" : error);
                             }
                             return;
                         }
-                        managerStatusText.setText("共 " + works.size() + " 个作品");
+                        managerStatusText.setText((autoRelogged ? "登录已自动续期　·　" : "")
+                                + "共 " + (works == null ? 0 : works.size()) + " 个作品");
                         renderWorks(works);
                     }
                 });
@@ -2160,6 +2227,10 @@ public class MainActivity extends Activity {
     }
 
     private void showTab(int index) {
+        // 左上角标题跟着分页走，页内不再另起一个同名大标题
+        if (titleView != null) {
+            titleView.setText(index == 1 ? "设置" : index == 2 ? "开发者内容管理" : "模组制作器");
+        }
         if (scrollView != null) scrollView.setVisibility(index == 2 ? View.GONE : View.VISIBLE);
         if (projectListContainer != null) projectListContainer.setVisibility(index == 0 ? View.VISIBLE : View.GONE);
         if (aboutContainer != null) aboutContainer.setVisibility(index == 1 ? View.VISIBLE : View.GONE);

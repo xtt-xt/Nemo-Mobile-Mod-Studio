@@ -30,6 +30,7 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 
+import com.xtt.mcmodmaker.net.DevAuth;
 import com.xtt.mcmodmaker.core.Constants;
 import com.xtt.mcmodmaker.net.McDevApi;
 import com.xtt.mcmodmaker.util.SettingsManager;
@@ -207,7 +208,7 @@ public class WorkDetailActivity extends Activity {
         isEdit = "edit".equals(getIntent().getStringExtra("mode"));
         itemId = getIntent().getStringExtra("item_id") == null ? "" : getIntent().getStringExtra("item_id");
         SettingsManager settings = SettingsManager.getInstance(this);
-        cookie = settings.getString(Constants.PREFS_MC_COOKIE, "");
+        cookie = DevAuth.cookie(this);
         if (cookie == null || cookie.isEmpty()) {
             UiUtils.toast(this, "请先登录");
             finish();

@@ -11,6 +11,7 @@ import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 
+import com.xtt.mcmodmaker.net.DevAuth;
 import com.xtt.mcmodmaker.core.Constants;
 import com.xtt.mcmodmaker.net.McDevApi;
 import com.xtt.mcmodmaker.util.SettingsManager;
@@ -44,7 +45,7 @@ public class MailboxActivity extends Activity {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             getWindow().getDecorView().setSystemUiVisibility(0); // 深色背景使用浅色系统图标。
         }
-        cookie = SettingsManager.getInstance(this).getString(Constants.PREFS_MC_COOKIE, "");
+        cookie = DevAuth.cookie(this);
         buildUi();
         if (cookie == null || cookie.isEmpty()) { status.setText("请先登录后查看收件箱"); return; }
         loadMail();
