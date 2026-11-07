@@ -403,37 +403,68 @@ public class MainActivity extends Activity {
     private void showSettingsPage() {
         aboutContainer.removeAllViews();
         // 关于分栏
-        aboutContainer.addView(settingsCard("关于", "版本信息、开源地址、开源鸣谢", AboutActivity.class));
+        aboutContainer.addView(settingsCard("关于", "版本信息、开源地址、开源鸣谢",
+                android.R.drawable.ic_menu_info_details, AboutActivity.class));
         // 代码高亮分栏
-        aboutContainer.addView(settingsCard("代码高亮", "文件类型高亮开关、语法颜色配置", HighlightSettingsActivity.class));
+        aboutContainer.addView(settingsCard("代码高亮", "文件类型高亮开关、语法颜色配置",
+                android.R.drawable.ic_menu_edit, HighlightSettingsActivity.class));
     }
     private OreCard settingsCard(String title, String desc, final Class<?> target) {
+        return settingsCard(title, desc, android.R.drawable.ic_menu_info_details, target);
+    }
+
+    /**
+     * 设置页的一行入口。
+     *
+     * 结构和首页的项目卡片一样：左边 80×80 的图标、右边标题加说明，
+     * 内边距也照抄，这样两个页面的卡片高度看起来是一致的。
+     */
+    private OreCard settingsCard(String title, String desc, int iconRes, final Class<?> target) {
         OreCard card = new OreCard(this);
-        card.setPadding(16, 20, 16, 20);
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.HORIZONTAL);
-        layout.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(16, 12, 16, 12);
+
+        LinearLayout cardLayout = new LinearLayout(this);
+        cardLayout.setOrientation(LinearLayout.HORIZONTAL);
+        cardLayout.setGravity(Gravity.CENTER_VERTICAL);
+
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(iconRes);
+        icon.setColorFilter(Color.parseColor("#AAAAAA"));
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(80, 80);
+        iconParams.setMargins(0, 0, 16, 0);
+        icon.setLayoutParams(iconParams);
+        cardLayout.addView(icon);
+
+        LinearLayout textLayout = new LinearLayout(this);
+        textLayout.setOrientation(LinearLayout.VERTICAL);
+        textLayout.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
         OreTextView tvTitle = new OreTextView(this);
         tvTitle.setText(title);
+        tvTitle.setTextSize(16);
         tvTitle.setTextColor(Color.WHITE);
-        tvTitle.setTextSize(14);
-        layout.addView(tvTitle, new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f));
+        textLayout.addView(tvTitle);
+
+        OreTextView tvDesc = new OreTextView(this);
+        tvDesc.setText(desc);
+        tvDesc.setTextSize(12);
+        tvDesc.setTextColor(Color.GRAY);
+        textLayout.addView(tvDesc);
+
+        cardLayout.addView(textLayout);
+
         OreTextView arrow = new OreTextView(this);
         arrow.setText(">");
         arrow.setTextColor(Color.parseColor("#888888"));
         arrow.setTextSize(16);
-        layout.addView(arrow);
-        card.addView(layout);
-        OreTextView tvDesc = new OreTextView(this);
-        tvDesc.setText(desc);
-        tvDesc.setTextColor(Color.GRAY);
-        tvDesc.setTextSize(11);
-        LinearLayout.LayoutParams descParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        descParams.topMargin = UiUtils.dp(this, 4);
-        tvDesc.setLayoutParams(descParams);
-        card.addView(tvDesc);
+        LinearLayout.LayoutParams arrowParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        arrowParams.leftMargin = UiUtils.dp(this, 8);
+        arrow.setLayoutParams(arrowParams);
+        cardLayout.addView(arrow);
+
+        card.addView(cardLayout);
         card.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 startActivity(new Intent(MainActivity.this, target));
