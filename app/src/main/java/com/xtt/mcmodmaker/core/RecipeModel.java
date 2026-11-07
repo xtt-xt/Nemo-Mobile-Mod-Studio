@@ -503,6 +503,72 @@ public final class RecipeModel {
         }
     }
 
+    /**
+     * 找指向同一物品的字母；没有就返回空格。
+     *
+     * 比对时算上附加值：羊毛 data 14 和 data 0 是两种东西，不能当成一个。
+     */
+    public char letterOf(ItemRef item) {
+        if (item == null || item.isEmpty()) return ' ';
+        for (Map.Entry<Character, ItemRef> e : key.entrySet()) {
+            ItemRef other = e.getValue();
+            if (other == null || other.isEmpty()) continue;
+            if (item.id.equals(other.id) && item.data == other.data) return e.getKey();
+        }
+        return ' ';
+    }
+
+    /**
+     * 把指向同一物品的多个字母合并成一个。
+     *
+     * 手工或用旧编辑器做出来的配方里经常出现 A 和 B 都是黑色玻璃这种情况，
+     * 看着像两种材料，其实是同一个；这里统一并到图案里先出现的那个字母上。
+     *
+     * @return 是否发生了合并（没合并就不必标脏）
+     */
+    public boolean mergeSameItems() {
+        if (type != SHAPED || key.isEmpty()) return false;
+
+        // 按图案里出现的先后排，这样合并后保留的字母是「第一次用到它」的那个
+        List<Character> order = new ArrayList<>();
+        for (String row : pattern) {
+            for (int i = 0; i < row.length(); i++) {
+                char c = row.charAt(i);
+                if (c != ' ' && !order.contains(c)) order.add(c);
+            }
+        }
+        for (Character c : key.keySet()) {
+            if (!order.contains(c)) order.add(c);
+        }
+
+        Map<String, Character> firstByItem = new LinkedHashMap<>();
+        Map<Character, Character> redirect = new LinkedHashMap<>();
+        for (Character c : order) {
+            ItemRef item = key.get(c);
+            if (item == null || item.isEmpty()) continue;
+            String sig = item.id + "#" + item.data;
+            Character keep = firstByItem.get(sig);
+            if (keep == null) firstByItem.put(sig, c);
+            else redirect.put(c, keep);
+        }
+        if (redirect.isEmpty()) return false;
+
+        for (int r = 0; r < pattern.length; r++) {
+            char[] chars = pattern[r].toCharArray();
+            boolean touched = false;
+            for (int i = 0; i < chars.length; i++) {
+                Character target = redirect.get(chars[i]);
+                if (target != null) {
+                    chars[i] = target;
+                    touched = true;
+                }
+            }
+            if (touched) pattern[r] = new String(chars);
+        }
+        for (Character c : redirect.keySet()) key.remove(c);
+        return true;
+    }
+
     /** 校验，返回给用户看的问题列表；空列表表示没发现问题。 */
     public List<String> validate() {
         List<String> errs = new ArrayList<>();

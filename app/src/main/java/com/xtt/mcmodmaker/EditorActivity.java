@@ -44,6 +44,8 @@ import com.xtt.mcmodmaker.util.JsonUtils;
 import com.xtt.mcmodmaker.util.SettingsManager;
 import com.xtt.mcmodmaker.util.UiUtils;
 
+import org.json.JSONObject;
+
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -97,6 +99,8 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
     // 代码编辑器状态
     private CodeEditor codeEditText;
     private String originalContent = "";
+    /** 源码编辑器当前打开的文件，切回可视化前要用它落盘。 */
+    private File sourceEditingFile;
 
     /** 缩略图缓存，按文件路径 + 目标宽度做键。 */
     private LruCache<String, Bitmap> thumbCache;
@@ -977,9 +981,33 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
     }
 
     @Override
-    public void showSourceEditor(File file) {
-        editorContainer.removeAllViews();
-        buildCodeEditor(file, editorContainer);
+    public void showSourceEditor(File file, LinearLayout container) {
+        container.removeAllViews();
+        buildCodeEditor(file, container);
+    }
+
+    /**
+     * 把源码编辑器里的改动写回磁盘。
+     *
+     * 配方文件必须是合法 JSON 才能落盘——半截的 JSON 写下去，可视化那边就打不开了，
+     * 所以这里先校验，过不了就让用户留在源码里继续改。
+     */
+    @Override
+    public boolean commitSourceEditor() {
+        if (codeEditText == null || sourceEditingFile == null) return true;
+        String text = codeEditText.getText().toString();
+        if (text.equals(originalContent)) return true;
+        if (sourceEditingFile.getName().toLowerCase().endsWith(".json")) {
+            try {
+                new JSONObject(text);
+            } catch (Exception e) {
+                Toast.makeText(this, "源码不是合法的 JSON，先修好再切回可视化编辑",
+                        Toast.LENGTH_LONG).show();
+                return false;
+            }
+        }
+        saveFileContent(sourceEditingFile, text);
+        return true;
     }
 
     @Override
@@ -1150,6 +1178,7 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
     // ==================== 代码编辑器 ====================
 
     private void buildCodeEditor(final File file, final LinearLayout parent) {
+        sourceEditingFile = file;
         LinearLayout editorLayout = new LinearLayout(this);
         editorLayout.setOrientation(LinearLayout.VERTICAL);
         editorLayout.setLayoutParams(new LinearLayout.LayoutParams(

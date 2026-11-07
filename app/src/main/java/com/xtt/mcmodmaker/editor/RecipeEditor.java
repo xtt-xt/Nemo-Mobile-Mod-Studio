@@ -12,6 +12,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -33,6 +34,7 @@ import dev1503.oreui.StyleSheet;
 import dev1503.oreui.dialog.OreDialogBuilder;
 import dev1503.oreui.widgets.OreAlert;
 import dev1503.oreui.widgets.OreButton;
+import dev1503.oreui.widgets.OreCard;
 import dev1503.oreui.widgets.OreEditText;
 import dev1503.oreui.widgets.OreSwitch;
 import dev1503.oreui.widgets.OreTextView;
@@ -52,8 +54,16 @@ public class RecipeEditor {
         /** 删除配方后刷新文件列表。 */
         void refreshFileList(File dir);
 
-        /** 切换到源码模式。 */
-        void showSourceEditor(File file);
+        /** 在给定容器里打开源码编辑器（顶部模式切换栏保留在上面）。 */
+        void showSourceEditor(File file, LinearLayout container);
+
+        /**
+         * 把源码编辑器里的改动写回磁盘。
+         *
+         * @return 内容不合法（比如 JSON 语法错）或保存失败时返回 false，
+         *         此时不能切回可视化，否则会拿旧内容盖掉源码
+         */
+        boolean commitSourceEditor();
 
         /** 取当前工程的根目录，用于扫描自定义物品。 */
         File projectDir();
@@ -77,11 +87,21 @@ public class RecipeEditor {
     private LinearLayout contentArea;
 
     // 有序合成的格子，[行][列]
-    private final OreButton[][] cells = new OreButton[3][3];
+    private final CellView[][] cells = new CellView[3][3];
     private LinearLayout keySummary;
     private LinearLayout listContainer;
     private LinearLayout issueContainer;
     private OreTextView unlockButton;
+    /** 当前是否停在源码模式（模式切换栏上的两个按钮共用它来判断方向）。 */
+    private boolean sourceMode;
+
+    /** 一个合成格子的视图：图标在上、名字在下，右上角挂字母角标。 */
+    private static final class CellView {
+        OreCard card;
+        ImageView icon;
+        OreTextView name;
+        TextView badge;
+    }
 
     public RecipeEditor(Context context, Host host) {
         this.context = context;
@@ -100,6 +120,7 @@ public class RecipeEditor {
     public void open(final File recipeFile, final LinearLayout editorContainer) {
         editorContainer.removeAllViews();
         currentFile = recipeFile;
+        sourceMode = false;
 
         LinearLayout modeBar = new LinearLayout(context);
         modeBar.setOrientation(LinearLayout.HORIZONTAL);
@@ -134,6 +155,12 @@ public class RecipeEditor {
 
         btnVisual.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
+                if (sourceMode) {
+                    // 源码改过就先落盘再切回可视化；语法错之类失败就留在源码里改
+                    if (!host.commitSourceEditor()) return;
+                    store.suspend();
+                    sourceMode = false;
+                }
                 btnVisual.setStyleSheet(StyleSheet.STYLE_GREEN);
                 btnSource.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
                 showVisual();
@@ -141,10 +168,16 @@ public class RecipeEditor {
         });
         btnSource.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
+                // 待落盘的改动先写掉，再挂起定时保存，免得后台把源码的改动盖回去
                 store.flush();
+                store.suspend();
+                sourceMode = true;
                 btnSource.setStyleSheet(StyleSheet.STYLE_GREEN);
                 btnVisual.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-                host.showSourceEditor(recipeFile);
+                if (contentArea != null) {
+                    contentArea.removeAllViews();
+                    host.showSourceEditor(recipeFile, contentArea);
+                }
             }
         });
         btnDelete.setOnClickListener(new View.OnClickListener() {
@@ -158,6 +191,8 @@ public class RecipeEditor {
 
     /** 离开页面前把没落盘的改动写下去。 */
     public void flushPending() {
+        // 停在源码模式时，编辑框里的内容还没有主人，先让它落盘
+        if (sourceMode) host.commitSourceEditor();
         store.flush();
     }
 
@@ -188,6 +223,8 @@ public class RecipeEditor {
 
         model = parsed;
         store.attach(currentFile, model);
+        // 打开就先把重复的字母并掉：同一个物品不该占两个字母
+        boolean mergedOnOpen = model.mergeSameItems();
 
         if (!model.supported()) {
             contentArea.addView(errorBlock("这个配方无法可视化编辑",
@@ -255,6 +292,8 @@ public class RecipeEditor {
 
         // 兜底：写回初始文件，保证「打开即保存」不会改坏东西
         store.resume();
+        // 打开时并掉了重复字母，就把合并结果落盘，免得界面看着和文件对不上
+        if (mergedOnOpen) store.markDirty();
         refreshIssues();
     }
 
@@ -380,7 +419,14 @@ public class RecipeEditor {
     }
 
     private void changed() {
-        if (model != null) model.pruneKey();
+        boolean merged = false;
+        if (model != null) {
+            model.pruneKey();
+            // 同一个物品被分成了两个字母就并回一个，图案里的字母也要跟着重刷
+            merged = model.mergeSameItems();
+            if (merged) model.pruneKey();
+        }
+        if (merged) renderGrid();
         refreshIssues();
         store.markDirty();
     }
@@ -399,31 +445,48 @@ public class RecipeEditor {
                 final int rr = r;
                 final int cc = c;
 
-                // 格子 = 按钮铺满 + 右上角字母角标
+                // 格子 = 面板铺满 + 图标在上名字在下 + 右上角字母角标
                 FrameLayout wrapper = new FrameLayout(context);
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                         0, UiUtils.dp(context, CELL_HEIGHT_DP), 1f);
                 lp.setMargins(m, m, m, m);
                 wrapper.setLayoutParams(lp);
 
-                OreButton cell = new OreButton(context);
-                FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(
+                OreCard card = new OreCard(context);
+                card.setOrientation(LinearLayout.VERTICAL);
+                card.setGravity(Gravity.CENTER);
+                card.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+                card.setPadding(UiUtils.dp(context, 3), UiUtils.dp(context, 6),
+                        UiUtils.dp(context, 3), UiUtils.dp(context, 6));
+                card.setLayoutParams(new FrameLayout.LayoutParams(
                         FrameLayout.LayoutParams.MATCH_PARENT,
-                        FrameLayout.LayoutParams.MATCH_PARENT);
-                cell.setLayoutParams(clp);
-                cell.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-                cell.setMaxLines(1);
-                cell.setGravity(Gravity.CENTER);
-                cell.setOnClickListener(new View.OnClickListener() {
+                        FrameLayout.LayoutParams.MATCH_PARENT));
+                card.setOnClickListener(new View.OnClickListener() {
                     @Override public void onClick(View v) {
                         onCellClick(rr, cc);
                     }
                 });
-                cells[r][c] = cell;
-                wrapper.addView(cell);
+                wrapper.addView(card);
+
+                ImageView icon = new ImageView(context);
+                int iconPx = UiUtils.dp(context, 32);
+                LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(iconPx, iconPx);
+                ilp.bottomMargin = UiUtils.dp(context, 3);
+                icon.setLayoutParams(ilp);
+                icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                icon.setVisibility(View.GONE);
+                card.addView(icon);
+
+                OreTextView name = new OreTextView(context);
+                name.setTextSize(9);
+                name.setGravity(Gravity.CENTER);
+                name.setMaxLines(2);
+                name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                name.setLayoutParams(new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+                card.addView(name);
 
                 TextView badge = new TextView(context);
-                badge.setTag("badge");
                 badge.setTextSize(8);
                 badge.setTextColor(Color.parseColor("#E8E8E8"));
                 badge.setGravity(Gravity.CENTER);
@@ -434,6 +497,13 @@ public class RecipeEditor {
                         Gravity.END | Gravity.TOP);
                 badge.setLayoutParams(blp);
                 wrapper.addView(badge);
+
+                CellView cell = new CellView();
+                cell.card = card;
+                cell.icon = icon;
+                cell.name = name;
+                cell.badge = badge;
+                cells[r][c] = cell;
 
                 row.addView(wrapper);
             }
@@ -458,76 +528,55 @@ public class RecipeEditor {
         for (int r = 0; r < 3; r++) {
             String rowStr = model.pattern[r];
             for (int c = 0; c < 3; c++) {
-                OreButton cell = cells[r][c];
+                CellView cell = cells[r][c];
                 if (cell == null) continue;
                 char letter = c < rowStr.length() ? rowStr.charAt(c) : ' ';
+                ItemRef item = letter == ' ' ? null : model.key.get(letter);
                 if (letter == ' ') {
-                    cell.setText("＋");
-                    cell.setStyleSheet(StyleSheet.STYLE_INACTIVATED);
-                    cell.setTextColor(Color.parseColor("#8A8A8A"));
+                    cell.card.setStyleSheet(StyleSheet.STYLE_INACTIVATED);
+                    cell.name.setText("＋");
+                    cell.name.setTextColor(Color.parseColor("#8A8A8A"));
+                    cell.icon.setVisibility(View.GONE);
+                } else if (item == null || item.isEmpty()) {
+                    cell.card.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+                    cell.name.setText("未指定");
+                    cell.name.setTextColor(Color.parseColor("#E0A030"));
+                    cell.icon.setVisibility(View.GONE);
                 } else {
-                    ItemRef item = model.key.get(letter);
-                    if (item == null || item.isEmpty()) {
-                        cell.setText("未指定");
-                        cell.setTextColor(Color.parseColor("#E0A030"));
-                        cell.setCompoundDrawables(null, null, null, null);
-                    } else {
-                        cell.setText(ItemRegistry.nameOf(context, item.id));
-                        cell.setTextColor(Color.WHITE);
-                        attachCellIcon(cell, item.id);
-                    }
-                    cell.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+                    cell.card.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+                    cell.name.setText(ItemRegistry.nameOf(context, item.id));
+                    cell.name.setTextColor(Color.WHITE);
+                    loadCellIcon(cell, item.id);
                 }
-                if (letter == ' ') cell.setCompoundDrawables(null, null, null, null);
-                setBadge(cell, letter == ' ' ? null : String.valueOf(letter));
+                if (letter == ' ') {
+                    cell.badge.setVisibility(View.GONE);
+                } else {
+                    cell.badge.setText(String.valueOf(letter));
+                    cell.badge.setVisibility(View.VISIBLE);
+                }
             }
         }
         renderKeySummary();
     }
 
     /**
-     * 给格子挂物品图标。
+     * 给格子挂图标。
      *
-     * OreButton 是普通 Button，放不了 View，所以用 IconLoader 在后台把图画出来，
-     * 回来之后设成 drawableTop —— 图标在上、名字在下。
-     * 方块渲染成立方体、普通物品用原版贴图、都缺就上占位图，格子里不会有空档。
+     * 图标是格子里独立的 ImageView（在名字上方），不再用按钮的 drawableTop：
+     * drawableTop 和文字是各自算位置的，格子一高就对不齐。
      */
-    private void attachCellIcon(final OreButton cell, final String id) {
-        cell.setCompoundDrawables(null, null, null, null);
-        final String pendingId = id;
-        cell.setTag(pendingId);
-        final int px = UiUtils.dp(context, 26);
+    private void loadCellIcon(final CellView cell, final String id) {
+        cell.icon.setTag(id);
+        final int px = UiUtils.dp(context, 32);
         IconLoader.loadBitmap(context, id, host.projectDir(), px, new IconLoader.OnIcon() {
             @Override
             public void onIcon(Bitmap bitmap) {
                 // 期间格子可能已经被换成别的物品了，丢弃过期结果
-                if (!pendingId.equals(cell.getTag())) return;
-                android.graphics.drawable.BitmapDrawable d =
-                        new android.graphics.drawable.BitmapDrawable(context.getResources(), bitmap);
-                d.setFilterBitmap(false);
-                d.setBounds(0, 0, px, px);
-                cell.setCompoundDrawables(null, d, null, null);
-                cell.setCompoundDrawablePadding(UiUtils.dp(context, 1));
+                if (!id.equals(cell.icon.getTag())) return;
+                cell.icon.setImageBitmap(bitmap);
+                cell.icon.setVisibility(View.VISIBLE);
             }
         });
-    }
-
-    /** 设置格子右上角的字母角标；null 表示隐藏。 */
-    private void setBadge(OreButton cell, String label) {
-        View parent = (View) cell.getParent();
-        if (!(parent instanceof ViewGroup)) return;
-        ViewGroup vg = (ViewGroup) parent;
-        for (int i = 0; i < vg.getChildCount(); i++) {
-            View child = vg.getChildAt(i);
-            if (!(child instanceof TextView) || !"badge".equals(child.getTag())) continue;
-            if (label == null) {
-                child.setVisibility(View.GONE);
-            } else {
-                ((TextView) child).setText(label);
-                child.setVisibility(View.VISIBLE);
-            }
-            return;
-        }
     }
 
     private void renderKeySummary() {
@@ -694,10 +743,14 @@ public class RecipeEditor {
                     @Override public void onPick(ItemRef item) {
                         char letter = model.pattern[row].charAt(col);
                         if (letter == ' ') {
-                            letter = model.nextFreeLetter();
+                            // 这个物品前面已经用过就直接复用那个字母，不要另开一个新字母
+                            char reused = model.letterOf(item);
+                            letter = reused != ' ' ? reused : model.nextFreeLetter();
+                            if (reused == ' ') model.key.put(letter, item);
                             model.pattern[row] = replaceChar(model.pattern[row], col, letter);
+                        } else {
+                            model.key.put(letter, item);
                         }
-                        model.key.put(letter, item);
                         renderGrid();
                         changed();
                     }
