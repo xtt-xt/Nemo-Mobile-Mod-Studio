@@ -67,6 +67,9 @@ public class RecipeEditor {
 
         /** 取当前工程的根目录，用于扫描自定义物品。 */
         File projectDir();
+
+        /** 当前是不是停在「编辑」分页：右侧够宽，九宫格与字母映射可以并排。 */
+        boolean sideBySideRecipe();
     }
 
     private static final String[] CRAFTING_TAGS = {"crafting_table"};
@@ -539,25 +542,37 @@ public class RecipeEditor {
             }
             grid.addView(row);
         }
-        // 左边九宫格、右边字母映射，并排放在一行里
-        LinearLayout combo = new LinearLayout(context);
-        combo.setOrientation(LinearLayout.HORIZONTAL);
-        combo.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        // 编辑分页右侧够宽，九宫格与字母映射并排；浏览和聚焦下右侧窄，仍旧上下排
+        if (host.sideBySideRecipe()) {
+            LinearLayout combo = new LinearLayout(context);
+            combo.setOrientation(LinearLayout.HORIZONTAL);
+            combo.setLayoutParams(new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        grid.setLayoutParams(new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.35f));
-        combo.addView(grid);
+            grid.setLayoutParams(new LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.35f));
+            combo.addView(grid);
 
-        keySummary = new LinearLayout(context);
-        keySummary.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        sp.leftMargin = UiUtils.dp(context, 10);
-        keySummary.setLayoutParams(sp);
-        combo.addView(keySummary);
+            keySummary = new LinearLayout(context);
+            keySummary.setOrientation(LinearLayout.VERTICAL);
+            LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+            sp.leftMargin = UiUtils.dp(context, 10);
+            keySummary.setLayoutParams(sp);
+            combo.addView(keySummary);
 
-        parent.addView(combo);
+            parent.addView(combo);
+        } else {
+            parent.addView(grid);
+
+            keySummary = new LinearLayout(context);
+            keySummary.setOrientation(LinearLayout.VERTICAL);
+            LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            sp.topMargin = UiUtils.dp(context, 10);
+            keySummary.setLayoutParams(sp);
+            parent.addView(keySummary);
+        }
 
         renderGrid();
     }
@@ -648,11 +663,19 @@ public class RecipeEditor {
      * 名字和 id 相同（清单里没有中文名）时只显示一次，避免
      * 「xxx:yyy  xxx:yyy」这种重复。
      */
+    /**
+     * 一条材料行：[字母] [名字] [id] [data]。
+     *
+     * 映射栏窄的时候（编辑分页并排）名字与 id 分两行，宽的时候（上下排）挤在一行，
+     * 和改动前看起来一致。
+     */
     private View materialRow(char letter, ItemRef item, View.OnClickListener onClick) {
+        boolean narrow = host.sideBySideRecipe();
+
         LinearLayout row = new LinearLayout(context);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, UiUtils.dp(context, 3), 0, UiUtils.dp(context, 3));
+        row.setPadding(0, UiUtils.dp(context, narrow ? 3 : 2), 0, UiUtils.dp(context, narrow ? 3 : 2));
         row.setOnClickListener(onClick);
 
         boolean missing = item == null || item.isEmpty();
@@ -666,13 +689,13 @@ public class RecipeEditor {
         key.setBackgroundColor(Color.parseColor("#4A4A4A"));
         LinearLayout.LayoutParams klp = new LinearLayout.LayoutParams(
                 UiUtils.dp(context, 20), UiUtils.dp(context, 20));
-        klp.rightMargin = UiUtils.dp(context, 7);
+        klp.rightMargin = UiUtils.dp(context, narrow ? 7 : 8);
         key.setLayoutParams(klp);
         row.addView(key);
 
         if (missing) {
             OreTextView name = new OreTextView(context);
-            name.setText("未指定物品");
+            name.setText(narrow ? "未指定物品" : "未指定物品，点击选择");
             name.setTextColor(Color.parseColor("#E0A030"));
             name.setTextSize(11);
             name.setLayoutParams(new LinearLayout.LayoutParams(
@@ -681,31 +704,74 @@ public class RecipeEditor {
             return row;
         }
 
-        // 映射这一栏宽度有限，名字在上、id 与附加值缩成一行小字在下面
-        LinearLayout texts = new LinearLayout(context);
-        texts.setOrientation(LinearLayout.VERTICAL);
-        texts.setLayoutParams(new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        String display = ItemRegistry.nameOf(context, item.id);
+
+        if (narrow) {
+            LinearLayout texts = new LinearLayout(context);
+            texts.setOrientation(LinearLayout.VERTICAL);
+            texts.setLayoutParams(new LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+            OreTextView name = new OreTextView(context);
+            name.setText(display);
+            name.setTextColor(Color.parseColor("#DDDDDD"));
+            name.setTextSize(11);
+            name.setMaxLines(1);
+            name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            texts.addView(name);
+
+            StringBuilder sub = new StringBuilder(shortId(item));
+            if (item.hasData()) sub.append("   data ").append(item.data);
+            OreTextView idText = new OreTextView(context);
+            idText.setText(sub.toString());
+            idText.setTextColor(Color.parseColor(item.hasData() ? "#7ED17E" : "#7A7A7A"));
+            idText.setTextSize(9);
+            idText.setMaxLines(1);
+            idText.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            texts.addView(idText);
+
+            row.addView(texts);
+            return row;
+        }
+
+        ItemRegistry.Entry entry = findEntry(item.id);
+        boolean distinct = entry != null ? entry.hasDistinctName() : !display.equals(shortId(item));
 
         OreTextView name = new OreTextView(context);
-        name.setText(ItemRegistry.nameOf(context, item.id));
+        name.setText(display);
         name.setTextColor(Color.parseColor("#DDDDDD"));
         name.setTextSize(11);
         name.setMaxLines(1);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        texts.addView(name);
+        name.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(name);
 
-        StringBuilder sub = new StringBuilder(shortId(item));
-        if (item.hasData()) sub.append("   data ").append(item.data);
-        OreTextView idText = new OreTextView(context);
-        idText.setText(sub.toString());
-        idText.setTextColor(Color.parseColor(item.hasData() ? "#7ED17E" : "#7A7A7A"));
-        idText.setTextSize(9);
-        idText.setMaxLines(1);
-        idText.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        texts.addView(idText);
+        if (distinct) {
+            OreTextView idText = new OreTextView(context);
+            idText.setText(shortId(item));
+            idText.setTextColor(Color.parseColor("#7A7A7A"));
+            idText.setTextSize(9);
+            idText.setMaxLines(1);
+            idText.setEllipsize(android.text.TextUtils.TruncateAt.START);
+            LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            ilp.leftMargin = UiUtils.dp(context, 8);
+            idText.setLayoutParams(ilp);
+            row.addView(idText);
+        }
 
-        row.addView(texts);
+        if (item.hasData()) {
+            OreTextView dataText = new OreTextView(context);
+            dataText.setText("data " + item.data);
+            dataText.setTextColor(Color.parseColor("#7ED17E"));
+            dataText.setTextSize(9);
+            LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            dlp.leftMargin = UiUtils.dp(context, 8);
+            dataText.setLayoutParams(dlp);
+            row.addView(dataText);
+        }
         return row;
     }
 

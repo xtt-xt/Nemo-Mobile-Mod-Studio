@@ -311,11 +311,11 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
         LinearLayout.LayoutParams middleParams = (LinearLayout.LayoutParams) middlePanel.getLayoutParams();
         LinearLayout.LayoutParams rightParams = (LinearLayout.LayoutParams) rightPanel.getLayoutParams();
 
-        // 聚焦与编辑模式下左侧别的地方已经提供了这些入口，顶部折叠面板收起来，
-        // 免得同一个功能出现两遍（编辑模式的左栏就是「返回主界面 / 创建备份」）
+        // 「功能」折叠面板保留在上面，编辑模式下左侧不再另起一份同样的按钮；
+        // 只有聚焦模式要尽量腾出空间，才把它收起来
         View funcAccordion = leftPanel.getChildAt(0);
         if (funcAccordion != null) {
-            funcAccordion.setVisibility(mode == MODE_BROWSE ? View.VISIBLE : View.GONE);
+            funcAccordion.setVisibility(mode == MODE_FOCUS ? View.GONE : View.VISIBLE);
         }
 
         if (mode == MODE_FOCUS) {
@@ -454,29 +454,14 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
         leftContainer.addView(shortcut);
     }
 
+    /**
+     * 编辑模式的左栏。
+     *
+     * 「返回主界面 / 创建备份」在上面的「功能」折叠面板里已经有了，
+     * 这里不再重复放一遍，保持左侧只有一份入口。
+     */
     private void buildEditLeft() {
         leftContainer.removeAllViews();
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-
-        OreButton btnBack = new OreButton(this);
-        btnBack.setText("返回主界面");
-        btnBack.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-        btnBack.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { finish(); }
-        });
-        panel.addView(btnBack);
-        UiUtils.addGap(this, panel, 6);
-
-        OreButton btnBackup = new OreButton(this);
-        btnBackup.setText("创建备份");
-        btnBackup.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-        btnBackup.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { createBackupInEditor(); }
-        });
-        panel.addView(btnBackup);
-
-        leftContainer.addView(panel);
     }
 
     private void addFunctionAccordion(LinearLayout panel) {
@@ -1106,6 +1091,11 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
     @Override
     public File projectDir() {
         return projectDir;
+    }
+
+    @Override
+    public boolean sideBySideRecipe() {
+        return currentMode == MODE_EDIT;
     }
 
     // ==================== 分类跳转 ====================
