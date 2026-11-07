@@ -106,8 +106,9 @@ public final class ItemPickerDialog {
 
         // 常驻显示原版物品库对应的游戏版本，避免用户不知道库是哪一版的
         OreTextView libInfo = new OreTextView(context);
-        libInfo.setText("原版物品库 · 基岩版 " + ItemRegistry.VANILLA_VERSION
-                + "　　本工程自定义 " + ItemRegistry.customItems().size() + " 项");
+        libInfo.setText("原版库 " + ItemRegistry.VANILLA_VERSION
+                + "（网易 " + ItemRegistry.NETEASE_VERSION + "）"
+                + "　本工程 " + ItemRegistry.customItems().size() + " 项");
         libInfo.setTextColor(Color.parseColor("#7A9A7A"));
         libInfo.setTextSize(9);
         libInfo.setPadding(UiUtils.dp(context, 6), UiUtils.dp(context, 6), 0, 0);

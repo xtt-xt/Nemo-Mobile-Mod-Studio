@@ -57,8 +57,16 @@ public final class ItemRegistry {
         }
     }
 
-    /** 原版库对应的基岩版版本号，界面上要标出来。 */
-    public static final String VANILLA_VERSION = "1.21.120";
+    /**
+     * 原版库对应的版本。
+     *
+     * 网易中国版 3.10 = 基岩版 1.21.130（2026-10-30 全渠道推送），
+     * 所以清单按 1.21.130 生成，界面上要把这两层版本都标出来，
+     * 免得有人拿着 3.9 的工程来对不上。
+     */
+    public static final String VANILLA_VERSION = "1.21.130";
+    /** 对应的网易中国版版本号。 */
+    public static final String NETEASE_VERSION = "3.10";
 
     private static List<Entry> vanilla;
     private static final List<Entry> custom = new ArrayList<>();
