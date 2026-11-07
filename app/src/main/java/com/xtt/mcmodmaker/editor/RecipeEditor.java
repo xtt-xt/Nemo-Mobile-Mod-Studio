@@ -11,6 +11,7 @@ import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -94,9 +95,13 @@ public class RecipeEditor {
     private LinearLayout keySummary;
     private LinearLayout listContainer;
     private LinearLayout issueContainer;
+    /** 上一次画出来的校验提示文本，用来避免没变也重建。 */
+    private String lastIssuesText = "";
     private OreTextView unlockButton;
     /** 当前是否停在源码模式（模式切换栏上的两个按钮共用它来判断方向）。 */
     private boolean sourceMode;
+    /** 整体重建前记下的滚动位置；新滚动视图布局完成后恢复到这里。 */
+    private int pendingScrollY = -1;
 
     /** 一个合成格子的视图：图标在上、名字在下，右上角挂字母角标。 */
     private static final class CellView {
@@ -124,6 +129,7 @@ public class RecipeEditor {
         editorContainer.removeAllViews();
         currentFile = recipeFile;
         sourceMode = false;
+        pendingScrollY = -1;
 
         LinearLayout modeBar = new LinearLayout(context);
         modeBar.setOrientation(LinearLayout.HORIZONTAL);
@@ -224,11 +230,14 @@ public class RecipeEditor {
      */
     private void showVisual(boolean reuseModel) {
         if (currentFile == null || contentArea == null) return;
+        final int restoreY = pendingScrollY;
+        pendingScrollY = -1;
         contentArea.removeAllViews();
         cells[0][0] = null;
         keySummary = null;
         listContainer = null;
         issueContainer = null;
+        lastIssuesText = "";
         unlockButton = null;
 
         RecipeModel parsed;
@@ -272,6 +281,10 @@ public class RecipeEditor {
                 UiUtils.dp(context, 4), UiUtils.dp(context, 12));
         scroll.addView(body);
         contentArea.addView(scroll);
+        if (restoreY > 0) {
+            // 结构改动后重建界面：把滚动位置带过去，不然用户会以为跳页了
+            attachScrollRestore(scroll, restoreY);
+        }
 
         // 标题区
         body.addView(headerBlock());
@@ -394,18 +407,24 @@ public class RecipeEditor {
 
     private void refreshIssues() {
         if (issueContainer == null || model == null) return;
-        issueContainer.removeAllViews();
         List<String> errs = model.validate();
         errs.addAll(unknownIdWarnings());
-        if (errs.isEmpty()) return;
-        OreAlert alert = new OreAlert(context);
-        alert.setStyleSheet(StyleSheet.STYLE_ALERT_YELLOW);
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < errs.size(); i++) {
             if (i > 0) sb.append('\n');
             sb.append("· ").append(errs.get(i));
         }
-        alert.setText(sb.toString());
+        String text = sb.toString();
+        // 内容没变就别重建这一块：它长在页面靠上的位置，一增一删会把下面的内容
+        // 整体顶上顶下，看着像跳了一下
+        if (text.equals(lastIssuesText)) return;
+        lastIssuesText = text;
+
+        issueContainer.removeAllViews();
+        if (text.isEmpty()) return;
+        OreAlert alert = new OreAlert(context);
+        alert.setStyleSheet(StyleSheet.STYLE_ALERT_YELLOW);
+        alert.setText(text);
         issueContainer.addView(alert);
         UiUtils.addGap(context, issueContainer, UiUtils.dp(context, 6));
     }
@@ -1650,12 +1669,53 @@ public class RecipeEditor {
     /** 结构变了要整体重建，但把滚动位置和模型带过去，不让用户以为自己跳页了。 */
     private void rebuildVisualKeepScroll() {
         if (contentArea == null) return;
-        int y = 0;
-        View child = contentArea.getChildAt(1);
-        if (child instanceof ScrollView) y = ((ScrollView) child).getScrollY();
+        pendingScrollY = Math.max(0, currentScrollY());
         showVisual(true);
-        View again = contentArea.getChildAt(1);
-        if (again instanceof ScrollView) ((ScrollView) again).scrollTo(0, y);
+    }
+
+    /** 当前可视化区滚到哪了；没有滚动视图时返回 0。 */
+    private int currentScrollY() {
+        if (contentArea == null) return 0;
+        for (int i = 0; i < contentArea.getChildCount(); i++) {
+            View child = contentArea.getChildAt(i);
+            if (child instanceof ScrollView) return ((ScrollView) child).getScrollY();
+        }
+        return 0;
+    }
+
+    /**
+     * 让新滚动视图落到指定位置。
+     *
+     * 刚 addView 的 ScrollView 还没测量，直接 scrollTo 会被钳回 0，
+     * 所以先藏着，等它排完版（onPreDraw 在布局之后、绘制之前）再滚过去显示，
+     * 这样既不会闪一下顶部，也不会停在原处不动。
+     */
+    private static void attachScrollRestore(final ScrollView scroll, final int y) {
+        scroll.setVisibility(View.INVISIBLE);
+
+        final boolean[] done = new boolean[1];
+        final Runnable restore = new Runnable() {
+            @Override public void run() {
+                if (done[0]) return;
+                done[0] = true;
+                scroll.scrollTo(0, y);
+                scroll.setVisibility(View.VISIBLE);
+            }
+        };
+
+        scroll.getViewTreeObserver().addOnPreDrawListener(new ViewTreeObserver.OnPreDrawListener() {
+            @Override public boolean onPreDraw() {
+                scroll.getViewTreeObserver().removeOnPreDrawListener(this);
+                restore.run();
+                return true;
+            }
+        });
+        // 兜底：万一这棵树压根没被绘制（尺寸为 0 之类），别让它一直藏着
+        scroll.postDelayed(new Runnable() {
+            @Override public void run() {
+                if (!done[0]) restore.run();
+            }
+        }, 320);
     }
 
     // ==================== 附加值 ====================
