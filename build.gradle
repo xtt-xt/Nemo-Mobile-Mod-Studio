@@ -1,7 +1,7 @@
-// 根构建脚本：AGP 7.0.2 + Gradle 7.5
+// 根构建脚本：AGP 8.7.3 + Gradle 8.13
 // 已移除已停服的 dl.bintray.com / clojars 镜像
 buildscript {
-    ext.build_gradle_version = '7.0.2'
+    ext.build_gradle_version = '8.7.3'
     repositories {
         maven { url 'https://maven.aliyun.com/repository/public/' }
         maven { url 'https://maven.aliyun.com/repository/google/' }

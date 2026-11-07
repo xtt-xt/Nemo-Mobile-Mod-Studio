@@ -1,8 +1,8 @@
 apply plugin: 'com.android.application'
 
 android {
-    compileSdkVersion 30
-    buildToolsVersion "33.0.0"
+    namespace "com.xtt.mcmodmaker"
+    compileSdk 35
 
     defaultConfig {
         applicationId "com.xtt.mcmodmaker"
@@ -34,6 +34,15 @@ android {
                 signingConfig signingConfigs.release
             }
         }
+        // 本机快测用：照 release 编译（AOT 正常），只关 R8/资源压缩，包名加后缀区分。
+        fast {
+            initWith(buildTypes.release)
+            applicationIdSuffix ".fast"
+            versionNameSuffix "-fast"
+            minifyEnabled false
+            shrinkResources false
+            signingConfig signingConfigs.debug
+        }
     }
 
     // 兼容 Java 8 语法（lambda 等）
@@ -41,21 +50,39 @@ android {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    // 不上架 Play，targetSdk 保持 26 以免改变存储/权限行为；
+    // 随之而来的 lint「targetSdk 过期」提示与构建无关，直接关掉。
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
 }
-
-// 移除实验性 aapt2 覆盖，使用默认 aapt2
-// android.aapt2FromMavenOverride = null
-
 
 dependencies {
     implementation files('libs/ore-ui.jar')
-    implementation 'androidx.appcompat:appcompat:1.0.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
     // 权限相关（ActivityCompat / ContextCompat）
-    implementation 'androidx.core:core:1.6.0'
+    implementation 'androidx.core:core:1.15.0'
     // SAF 树目录访问（DocumentFile）
     implementation 'androidx.documentfile:documentfile:1.0.1'
     // Kotlin 标准库（ore-ui 依赖 Kotlin 类）
-    implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.8.0'
+    implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.8.22'
     // sora-editor 开源代码编辑器
     implementation 'io.github.Rosemoe.sora-editor:editor:0.20.4'
 }
+
+// sora-editor 会带进 1.6.x 的 kotlin-stdlib-jdk7/jdk8，与 1.8 的 kotlin-stdlib 类重复。
+// Kotlin 1.8 起这两个包已并入 kotlin-stdlib，统一到同一版本即可消除重复类。
+configurations.all {
+    resolutionStrategy {
+        force 'org.jetbrains.kotlin:kotlin-stdlib:1.8.22'
+        force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22'
+        force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22'
+    }
+}
+
