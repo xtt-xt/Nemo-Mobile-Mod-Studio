@@ -125,6 +125,9 @@ public class AboutActivity extends Activity {
     /** 统一规格的卡片：内边距一致、下方留同样的间距。 */
     private OreCard baseCard() {
         OreCard card = new OreCard(this);
+        // OreCard 继承 LinearLayout，默认是横向的：不显式设成纵向，
+        // 往里加的标题和正文会并排成一行
+        card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(UiUtils.dp(this, PAD_H), UiUtils.dp(this, PAD_V),
                 UiUtils.dp(this, PAD_H), UiUtils.dp(this, PAD_V));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
@@ -140,6 +143,19 @@ public class AboutActivity extends Activity {
         t.setText(text);
         t.setTextColor(Color.WHITE);
         t.setTextSize(14);
+        return t;
+    }
+
+    /** 卡片里的小字提示（例如「点击检查更新」），比正文更淡。 */
+    private OreTextView cardHint(String text) {
+        OreTextView t = new OreTextView(this);
+        t.setText(text);
+        t.setTextColor(Color.parseColor("#7A7A7A"));
+        t.setTextSize(10);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = UiUtils.dp(this, 4);
+        t.setLayoutParams(lp);
         return t;
     }
 
@@ -159,45 +175,25 @@ public class AboutActivity extends Activity {
 
     // ==================== 各张卡片 ====================
 
-    /** 版本：左边版本号，右边「检查更新」。 */
+    /** 版本卡片：整块点一下就查更新，不再单独放按钮。 */
     private OreCard buildVersionCard() {
         OreCard card = baseCard();
-
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-
-        LinearLayout texts = new LinearLayout(this);
-        texts.setOrientation(LinearLayout.VERTICAL);
-        texts.setLayoutParams(new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-
-        OreTextView label = new OreTextView(this);
-        label.setText("当前版本");
-        label.setTextColor(Color.parseColor("#9A9A9A"));
-        label.setTextSize(11);
-        texts.addView(label);
+        card.addView(cardTitle("当前版本"));
 
         versionText = new OreTextView(this);
         versionText.setTextColor(Color.WHITE);
         versionText.setTextSize(14);
-        texts.addView(versionText);
+        LinearLayout.LayoutParams vp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        vp.topMargin = UiUtils.dp(this, 2);
+        versionText.setLayoutParams(vp);
+        card.addView(versionText);
 
-        row.addView(texts);
+        card.addView(cardHint("点击检查更新"));
 
-        OreButton btn = new OreButton(this);
-        btn.setText("检查更新");
-        btn.setStyleSheet(StyleSheet.STYLE_GREEN);
-        LinearLayout.LayoutParams btnParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        btnParams.leftMargin = UiUtils.dp(this, 10);
-        btn.setLayoutParams(btnParams);
-        btn.setOnClickListener(new View.OnClickListener() {
+        card.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { checkForUpdate(); }
         });
-        row.addView(btn);
-
-        card.addView(row);
         refreshVersionText();
         return card;
     }
@@ -228,27 +224,19 @@ public class AboutActivity extends Activity {
     }
 
     private OreCard buildAccountCard() {
-        OreCard card = baseCard();
+        final OreCard card = baseCard();
         card.addView(cardTitle("已保存的账号"));
 
         final OreTextView state = cardBody("");
         card.addView(state);
+        card.addView(cardHint("点击清除密码并退出登录"));
 
-        final OreButton clearBtn = new OreButton(this);
-        clearBtn.setText("清除密码并退出登录");
-        clearBtn.setStyleSheet(StyleSheet.STYLE_RED);
-        LinearLayout.LayoutParams btnParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        btnParams.topMargin = UiUtils.dp(this, 10);
-        clearBtn.setLayoutParams(btnParams);
-        card.addView(clearBtn);
+        updateAccountCard(state, card);
 
-        updateAccountCard(state, clearBtn);
-
-        clearBtn.setOnClickListener(new View.OnClickListener() {
+        card.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 DevAuth auth = DevAuth.load(AboutActivity.this);
-                if (auth == null || auth.email == null || auth.email.isEmpty()) {
+                if (auth == null) {
                     UiUtils.toast(AboutActivity.this, "没有保存的账号");
                     return;
                 }
@@ -264,7 +252,7 @@ public class AboutActivity extends Activity {
                                 // 免得留一个「登录着但续不了期」的半吊子状态
                                 DevAuth.clear(AboutActivity.this);
                                 UiUtils.toast(AboutActivity.this, "已清除账号并退出登录");
-                                updateAccountCard(state, clearBtn);
+                                updateAccountCard(state, card);
                                 d.dismiss();
                             }
                         })
@@ -274,18 +262,23 @@ public class AboutActivity extends Activity {
         return card;
     }
 
-    private void updateAccountCard(OreTextView state, OreButton clearBtn) {
+    private void updateAccountCard(OreTextView state, OreCard card) {
         DevAuth auth = DevAuth.load(this);
         boolean hasAccount = auth != null && auth.email != null && !auth.email.isEmpty();
         boolean hasPwd = auth != null && auth.password != null && !auth.password.isEmpty();
         boolean hasCookie = auth != null && auth.cookie != null && !auth.cookie.isEmpty();
 
         StringBuilder sb = new StringBuilder();
-        sb.append("账号：").append(hasAccount ? auth.email : "未保存");
-        sb.append('\n').append("密码：").append(hasPwd ? "已保存，登录失效会自动重新登录" : "未保存");
-        sb.append('\n').append("状态：").append(hasCookie ? "已登录" : "未登录");
+        if (!hasAccount && !hasCookie) {
+            sb.append("未保存任何账号，登录后会自动保存");
+            card.setEnabled(false);
+        } else {
+            sb.append("账号：").append(hasAccount ? auth.email : "未保存");
+            sb.append('\n').append("密码：").append(hasPwd ? "已保存，登录失效会自动重新登录" : "未保存");
+            sb.append('\n').append("状态：").append(hasCookie ? "已登录" : "未登录");
+            card.setEnabled(true);
+        }
         state.setText(sb.toString());
-        clearBtn.setEnabled(hasAccount || hasPwd || hasCookie);
     }
 
     private OreCard buildLinkCard() {
