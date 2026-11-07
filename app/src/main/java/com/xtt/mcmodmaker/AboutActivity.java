@@ -114,6 +114,8 @@ public class AboutActivity extends Activity {
         dataBody.setText("物品库：基岩版 " + ItemRegistry.VANILLA_VERSION
                 + "（网易 " + ItemRegistry.NETEASE_VERSION + "）\n"
                 + "包含原版方块与物品共 " + ItemRegistry.vanillaCount(this) + " 项\n"
+                + "方块图标：内置 " + com.xtt.mcmodmaker.core.BlockTextureLib.blockCount(this)
+                + " 种方块的原版贴图，按六面贴图实时渲染\n"
                 + "数据来源：Mojang 官方 bedrock-samples 与 BedrockData");
         dataBody.setTextColor(Color.parseColor("#AAAAAA"));
         dataBody.setTextSize(11);

@@ -3,6 +3,7 @@ package com.xtt.mcmodmaker.editor;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.graphics.Color;
+import android.graphics.Bitmap;
 import android.graphics.Typeface;
 import android.text.Editable;
 import android.text.InputType;
@@ -408,8 +409,9 @@ public class RecipeEditor {
                         FrameLayout.LayoutParams.WRAP_CONTENT);
                 cell.setLayoutParams(clp);
                 cell.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-                cell.setMaxLines(2);
-                cell.setMinHeight(UiUtils.dp(context, 54));
+                cell.setMaxLines(1);
+                cell.setGravity(Gravity.CENTER);
+                cell.setMinHeight(UiUtils.dp(context, 62));
                 cell.setOnClickListener(new View.OnClickListener() {
                     @Override public void onClick(View v) {
                         onCellClick(rr, cc);
@@ -466,16 +468,46 @@ public class RecipeEditor {
                     if (item == null || item.isEmpty()) {
                         cell.setText("未指定");
                         cell.setTextColor(Color.parseColor("#E0A030"));
+                        cell.setCompoundDrawables(null, null, null, null);
                     } else {
                         cell.setText(ItemRegistry.nameOf(context, item.id));
                         cell.setTextColor(Color.WHITE);
+                        attachCellIcon(cell, item.id);
                     }
                     cell.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
                 }
+                if (letter == ' ') cell.setCompoundDrawables(null, null, null, null);
                 setBadge(cell, letter == ' ' ? null : String.valueOf(letter));
             }
         }
         renderKeySummary();
+    }
+
+    /**
+     * 给格子挂方块图标。
+     *
+     * OreButton 是普通 Button，放不了 View，所以用 IconLoader 在后台把图画出来，
+     * 回来之后设成 drawableTop —— 图标在上、名字在下。
+     * 不是方块（普通物品）时渲染会返回 null，就只留文字。
+     */
+    private void attachCellIcon(final OreButton cell, final String id) {
+        cell.setCompoundDrawables(null, null, null, null);
+        final String pendingId = id;
+        cell.setTag(pendingId);
+        final int px = UiUtils.dp(context, 26);
+        IconLoader.loadBlockBitmap(context, id, host.projectDir(), px, new IconLoader.OnIcon() {
+            @Override
+            public void onIcon(Bitmap bitmap) {
+                // 期间格子可能已经被换成别的物品了，丢弃过期结果
+                if (!pendingId.equals(cell.getTag())) return;
+                android.graphics.drawable.BitmapDrawable d =
+                        new android.graphics.drawable.BitmapDrawable(context.getResources(), bitmap);
+                d.setFilterBitmap(false);
+                d.setBounds(0, 0, px, px);
+                cell.setCompoundDrawables(null, d, null, null);
+                cell.setCompoundDrawablePadding(UiUtils.dp(context, 1));
+            }
+        });
     }
 
     /** 设置格子右上角的字母角标；null 表示隐藏。 */
@@ -655,7 +687,7 @@ public class RecipeEditor {
     private void pickForCell(final int row, final int col) {
         char existing = model.pattern[row].charAt(col);
         ItemRef current = existing == ' ' ? null : model.key.get(existing);
-        ItemPickerDialog.show(context, "第 " + (row + 1) + " 行 第 " + (col + 1) + " 列的物品",
+        pick("第 " + (row + 1) + " 行 第 " + (col + 1) + " 列的物品",
                 current, new ItemPickerDialog.OnPick() {
                     @Override public void onPick(ItemRef item) {
                         char letter = model.pattern[row].charAt(col);
@@ -699,7 +731,7 @@ public class RecipeEditor {
         b.addButton("更换", StyleSheet.STYLE_GREEN, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface d, int which) {
                 d.dismiss();
-                ItemPickerDialog.show(context, "选择 " + letter + " 的物品", item,
+                pick("选择 " + letter + " 的物品", item,
                         new ItemPickerDialog.OnPick() {
                             @Override public void onPick(ItemRef picked) {
                                 model.key.put(letter, picked);
@@ -774,7 +806,7 @@ public class RecipeEditor {
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         add.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
-                ItemPickerDialog.show(context, "添加原料", null, new ItemPickerDialog.OnPick() {
+                pick("添加原料", null, new ItemPickerDialog.OnPick() {
                     @Override public void onPick(ItemRef item) {
                         model.ingredients.add(item);
                         renderShapeless();
@@ -909,7 +941,7 @@ public class RecipeEditor {
         bindItem(btn, current);
         btn.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
-                ItemPickerDialog.show(context, "选择" + label, currentOfButton(btn),
+                pick("选择" + label, currentOfButton(btn),
                         new ItemPickerDialog.OnPick() {
                             @Override public void onPick(ItemRef item) {
                                 bindItem(btn, item);
@@ -956,7 +988,7 @@ public class RecipeEditor {
         bindItem(btn, item);
         btn.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
-                ItemPickerDialog.show(context, "选择原料", currentOfButton(btn),
+                pick("选择原料", currentOfButton(btn),
                         new ItemPickerDialog.OnPick() {
                             @Override public void onPick(ItemRef picked) {
                                 bindItem(btn, picked);
@@ -1014,6 +1046,11 @@ public class RecipeEditor {
         btn.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
     }
 
+    /** 统一入口：把当前工程目录一并传下去，自定义方块才能显示图标。 */
+    private void pick(String title, ItemRef current, ItemPickerDialog.OnPick onPick) {
+        ItemPickerDialog.show(context, title, current, host.projectDir(), onPick);
+    }
+
     private ItemRef currentOfButton(OreButton btn) {
         Object tag = btn.getTag();
         if (tag == null) return null;
@@ -1046,7 +1083,7 @@ public class RecipeEditor {
         bindItem(btn, model.result);
         btn.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
-                ItemPickerDialog.show(context, "选择产出物品", model.result,
+                pick("选择产出物品", model.result,
                         new ItemPickerDialog.OnPick() {
                             @Override public void onPick(ItemRef item) {
                                 model.result = item;
@@ -1203,7 +1240,7 @@ public class RecipeEditor {
             add.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
             add.setOnClickListener(new View.OnClickListener() {
                 @Override public void onClick(View v) {
-                    ItemPickerDialog.show(context, "添加解锁物品", null, new ItemPickerDialog.OnPick() {
+                    pick("添加解锁物品", null, new ItemPickerDialog.OnPick() {
                         @Override public void onPick(ItemRef item) {
                             model.unlockItems.add(item);
                             rebuildVisualKeepScroll();

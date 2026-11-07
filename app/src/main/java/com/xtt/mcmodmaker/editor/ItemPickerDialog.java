@@ -14,6 +14,7 @@ import android.view.View;
 import android.view.Window;
 
 import androidx.appcompat.app.AlertDialog;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Toast;
@@ -22,6 +23,7 @@ import com.xtt.mcmodmaker.core.ItemRef;
 import com.xtt.mcmodmaker.core.ItemRegistry;
 import com.xtt.mcmodmaker.util.UiUtils;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -51,6 +53,8 @@ public final class ItemPickerDialog {
     private final Context context;
     private final OnPick onPick;
     private final Handler main = new Handler(Looper.getMainLooper());
+    /** 图标用的工程目录，自定义方块的贴图从这里读。 */
+    private File projectDirForIcons;
 
     private OreEditText searchBox;
     private LinearLayout resultContainer;
@@ -69,13 +73,25 @@ public final class ItemPickerDialog {
         this.onPick = onPick;
     }
 
+    private File projectDir() {
+        return projectDirForIcons;
+    }
+
     /**
      * 弹出选择器。
      *
      * @param current 当前已选物品，用于在列表里标出「当前」
      */
     public static void show(Context context, String title, ItemRef current, OnPick onPick) {
-        new ItemPickerDialog(context, onPick).open(title, current);
+        show(context, title, current, null, onPick);
+    }
+
+    /** 带工程目录的版本：自定义方块的贴图要从工程里读，才能显示图标。 */
+    public static void show(Context context, String title, ItemRef current,
+                            File projectDir, OnPick onPick) {
+        ItemPickerDialog d = new ItemPickerDialog(context, onPick);
+        d.projectDirForIcons = projectDir;
+        d.open(title, current);
     }
 
     private void open(String title, ItemRef current) {
@@ -201,6 +217,19 @@ public final class ItemPickerDialog {
         LinearLayout row = new LinearLayout(context);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
+
+        // 方块图标：渲染不出来（普通物品）就隐藏，不影响文字排版
+        ImageView icon = new ImageView(context);
+        int iconSize = UiUtils.dp(context, 22);
+        LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(iconSize, iconSize);
+        ip.rightMargin = UiUtils.dp(context, 7);
+        icon.setLayoutParams(ip);
+        icon.setVisibility(View.GONE);
+        icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        row.addView(icon);
+        if (entry.block) {
+            IconLoader.loadBlockIcon(context, entry.id, projectDir(), iconSize, icon);
+        }
 
         OreTextView name = new OreTextView(context);
         name.setText(entry.display());
