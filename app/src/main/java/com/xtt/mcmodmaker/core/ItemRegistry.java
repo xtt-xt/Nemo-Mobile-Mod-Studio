@@ -236,6 +236,11 @@ public final class ItemRegistry {
         return "";
     }
 
+    /** 内置原版库的条目数量（关于页要显示）。 */
+    public static int vanillaCount(Context context) {
+        return vanilla(context).size();
+    }
+
     /** 当前工程里的自定义物品与方块。 */
     public static synchronized List<Entry> customItems() {
         return new ArrayList<>(custom);

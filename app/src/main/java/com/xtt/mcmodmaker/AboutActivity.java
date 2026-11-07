@@ -13,6 +13,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 
 import com.xtt.mcmodmaker.core.Constants;
+import com.xtt.mcmodmaker.core.ItemRegistry;
 import com.xtt.mcmodmaker.util.UiUtils;
 
 import dev1503.oreui.StyleSheet;
@@ -96,6 +97,35 @@ public class AboutActivity extends Activity {
         cardParams.topMargin = UiUtils.dp(this, 8);
         versionCard.setLayoutParams(cardParams);
         root.addView(versionCard);
+
+        // 内置数据版本：说明物品库对应哪一版游戏，免得和实际工程对不上
+        OreCard dataCard = new OreCard(this);
+        dataCard.setPadding(16, 12, 16, 12);
+        LinearLayout dataLayout = new LinearLayout(this);
+        dataLayout.setOrientation(LinearLayout.VERTICAL);
+
+        OreTextView dataTitle = new OreTextView(this);
+        dataTitle.setText("内置数据版本");
+        dataTitle.setTextColor(Color.WHITE);
+        dataTitle.setTextSize(14);
+        dataLayout.addView(dataTitle);
+
+        OreTextView dataBody = new OreTextView(this);
+        dataBody.setText("物品库：基岩版 " + ItemRegistry.VANILLA_VERSION
+                + "（网易 " + ItemRegistry.NETEASE_VERSION + "）\n"
+                + "包含原版方块与物品共 " + ItemRegistry.vanillaCount(this) + " 项\n"
+                + "数据来源：Mojang 官方 bedrock-samples 与 BedrockData");
+        dataBody.setTextColor(Color.parseColor("#AAAAAA"));
+        dataBody.setTextSize(11);
+        dataBody.setPadding(0, UiUtils.dp(this, 6), 0, 0);
+        dataLayout.addView(dataBody);
+
+        dataCard.addView(dataLayout);
+        LinearLayout.LayoutParams dataParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        dataParams.topMargin = UiUtils.dp(this, 8);
+        dataCard.setLayoutParams(dataParams);
+        root.addView(dataCard);
 
         // 开源地址
         root.addView(linkCard("项目开源地址",

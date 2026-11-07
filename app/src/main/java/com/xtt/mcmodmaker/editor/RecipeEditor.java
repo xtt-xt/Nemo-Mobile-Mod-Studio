@@ -111,15 +111,11 @@ public class RecipeEditor {
         btnDelete.setText("删除配方");
         btnDelete.setStyleSheet(StyleSheet.STYLE_RED);
 
-        btnVisual.setLayoutParams(new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        btnSource.setLayoutParams(new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        LinearLayout.LayoutParams delParams = new LinearLayout.LayoutParams(
-                UiUtils.dp(context, 52), LinearLayout.LayoutParams.WRAP_CONTENT);
-        delParams.leftMargin = UiUtils.dp(context, 4);
-        btnDelete.setLayoutParams(delParams);
-        btnDelete.setText("删除");
+        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        btnVisual.setLayoutParams(bp);
+        btnSource.setLayoutParams(bp);
+        btnDelete.setLayoutParams(bp);
 
         modeBar.addView(btnVisual);
         modeBar.addView(btnSource);
