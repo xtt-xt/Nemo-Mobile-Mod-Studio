@@ -24,19 +24,19 @@ import com.xtt.mcmodmaker.core.ItemRegistry;
 import com.xtt.mcmodmaker.util.UiUtils;
 
 import java.io.File;
-import java.util.ArrayList;
 import java.util.List;
 
 import dev1503.oreui.StyleSheet;
 import dev1503.oreui.dialog.OreDialogBuilder;
-import dev1503.oreui.widgets.OreButton;
 import dev1503.oreui.widgets.OreCard;
 import dev1503.oreui.widgets.OreEditText;
 import dev1503.oreui.widgets.OreTextView;
 
 /**
- * 物品选择器：搜索 + 点选，替掉所有手打物品 id 的地方。
+ * 物品选择器：搜索 + 三列九宫格点选，替掉所有手打物品 id 的地方。
  *
+ * 每个格子是「图在上、名字在下」：方块渲染成立方体，普通物品用原版贴图，
+ * 缺图的一律上占位图，所以一屏里格子的排布永远是齐的。
  * 空查询先列出本工程的自定义物品和常用原版物品，输入关键字后按
  * 「id 前缀 → 名称前缀 → 包含」三层优先排序。
  */
@@ -47,6 +47,8 @@ public final class ItemPickerDialog {
         void onPick(ItemRef item);
     }
 
+    private static final int COLUMNS = 3;
+    private static final int CELL_HEIGHT_DP = 94;
     private static final int MAX_ROWS = 60;
     private static final long SEARCH_DEBOUNCE_MS = 180;
 
@@ -57,7 +59,7 @@ public final class ItemPickerDialog {
     private File projectDirForIcons;
 
     private OreEditText searchBox;
-    private LinearLayout resultContainer;
+    private LinearLayout gridContainer;
     private OreTextView statusText;
     private androidx.appcompat.app.AlertDialog dialog;
 
@@ -129,9 +131,10 @@ public final class ItemPickerDialog {
         ScrollView scroll = new ScrollView(context);
         scroll.setLayoutParams(new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
-        resultContainer = new LinearLayout(context);
-        resultContainer.setOrientation(LinearLayout.VERTICAL);
-        scroll.addView(resultContainer);
+        scroll.setClipToPadding(false);
+        gridContainer = new LinearLayout(context);
+        gridContainer.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(gridContainer);
         content.addView(scroll);
 
         builder.getRootLayout().addView(content,
@@ -156,8 +159,8 @@ public final class ItemPickerDialog {
         Window w = dialog.getWindow();
         if (w != null) {
             DisplayMetrics dm = context.getResources().getDisplayMetrics();
-            int width = (int) (Math.min(dm.widthPixels, dm.heightPixels) * 0.72f);
-            int height = (int) (dm.heightPixels * 0.82f);
+            int width = (int) (Math.min(dm.widthPixels, dm.heightPixels) * 0.88f);
+            int height = (int) (dm.heightPixels * 0.84f);
             w.setLayout(width, height);
         }
 
@@ -176,8 +179,8 @@ public final class ItemPickerDialog {
     }
 
     private void rebuildResults() {
-        if (resultContainer == null) return;
-        resultContainer.removeAllViews();
+        if (gridContainer == null) return;
+        gridContainer.removeAllViews();
 
         String query = searchBox == null ? "" : searchBox.getText().toString().trim();
         List<ItemRegistry.Entry> all = ItemRegistry.search(context, query, MAX_ROWS + 50);
@@ -189,15 +192,26 @@ public final class ItemPickerDialog {
             empty.setTextSize(11);
             empty.setGravity(Gravity.CENTER);
             empty.setPadding(0, UiUtils.dp(context, 24), 0, 0);
-            resultContainer.addView(empty);
+            gridContainer.addView(empty);
             statusText.setText("");
             return;
         }
 
         int shown = Math.min(all.size(), MAX_ROWS);
-        for (int i = 0; i < shown; i++) {
-            resultContainer.addView(buildRow(all.get(i)));
-            UiUtils.addGap(context, resultContainer, UiUtils.dp(context, 3));
+        for (int i = 0; i < shown; i += COLUMNS) {
+            LinearLayout row = new LinearLayout(context);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            for (int j = 0; j < COLUMNS; j++) {
+                int index = i + j;
+                if (index < shown) {
+                    row.addView(buildCell(all.get(index)), cellParams());
+                } else {
+                    // 末尾不足一行时补空位，保证每格一样宽
+                    row.addView(new View(context), cellParams());
+                }
+            }
+            gridContainer.addView(row);
+            UiUtils.addGap(context, gridContainer, UiUtils.dp(context, 4));
         }
 
         if (all.size() > shown) {
@@ -207,67 +221,56 @@ public final class ItemPickerDialog {
         }
     }
 
-    private View buildRow(final ItemRegistry.Entry entry) {
+    private LinearLayout.LayoutParams cellParams() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                0, UiUtils.dp(context, CELL_HEIGHT_DP), 1f);
+        int m = UiUtils.dp(context, 2);
+        lp.setMargins(m, m, m, m);
+        return lp;
+    }
+
+    /** 一个格子：图标 + 名字 + id，整块可点。 */
+    private View buildCell(final ItemRegistry.Entry entry) {
         OreCard card = new OreCard(context);
-        card.setPadding(UiUtils.dp(context, 8), UiUtils.dp(context, 6),
-                UiUtils.dp(context, 8), UiUtils.dp(context, 6));
-        card.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setGravity(Gravity.CENTER);
+        card.setPadding(UiUtils.dp(context, 3), UiUtils.dp(context, 5),
+                UiUtils.dp(context, 3), UiUtils.dp(context, 5));
 
-        LinearLayout row = new LinearLayout(context);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-
-        // 方块图标：渲染不出来（普通物品）就隐藏，不影响文字排版
         ImageView icon = new ImageView(context);
-        int iconSize = UiUtils.dp(context, 22);
-        LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(iconSize, iconSize);
-        ip.rightMargin = UiUtils.dp(context, 7);
-        icon.setLayoutParams(ip);
-        icon.setVisibility(View.GONE);
+        int iconSize = UiUtils.dp(context, 34);
+        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(iconSize, iconSize);
+        ilp.bottomMargin = UiUtils.dp(context, 3);
+        icon.setLayoutParams(ilp);
         icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        row.addView(icon);
-        if (entry.block) {
-            IconLoader.loadBlockIcon(context, entry.id, projectDir(), iconSize, icon);
-        }
+        card.addView(icon);
+        IconLoader.load(context, entry.id, projectDir(), iconSize, icon);
 
         OreTextView name = new OreTextView(context);
         name.setText(entry.display());
         name.setTextColor(entry.custom ? Color.parseColor("#9BE89B") : Color.WHITE);
-        name.setTextSize(12);
-        name.setMaxLines(1);
+        name.setTextSize(10);
+        name.setMaxLines(2);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        name.setGravity(Gravity.CENTER);
         name.setLayoutParams(new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        row.addView(name);
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        card.addView(name);
 
-        // 名字和 id 相同就没必要重复；有中文名时把 id 用小字附上便于核对
+        // 名字和 id 不同才补 id；相同就没必要重复一遍
         if (entry.hasDistinctName() || entry.custom) {
             OreTextView idText = new OreTextView(context);
             idText.setText(shortId(entry.id));
             idText.setTextColor(Color.parseColor("#7A7A7A"));
             idText.setTextSize(9);
             idText.setMaxLines(1);
-            idText.setEllipsize(android.text.TextUtils.TruncateAt.START);
-            LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            ilp.leftMargin = UiUtils.dp(context, 6);
-            idText.setLayoutParams(ilp);
-            row.addView(idText);
+            idText.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            idText.setGravity(Gravity.CENTER);
+            idText.setLayoutParams(new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+            card.addView(idText);
         }
 
-        OreTextView kind = new OreTextView(context);
-        kind.setText(entry.custom ? "本工程" : (entry.block ? "方块" : "物品"));
-        kind.setTextColor(entry.custom ? Color.parseColor("#E0C060")
-                : (entry.block ? Color.parseColor("#8AA8C0") : Color.parseColor("#8A8A8A")));
-        kind.setTextSize(8);
-        LinearLayout.LayoutParams klp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        klp.leftMargin = UiUtils.dp(context, 8);
-        kind.setLayoutParams(klp);
-        row.addView(kind);
-
-        card.addView(row);
         card.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {

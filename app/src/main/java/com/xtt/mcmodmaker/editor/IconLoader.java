@@ -14,10 +14,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * 方块图标的异步加载。
+ * 图标的异步加载。
  *
  * 渲染要读 png、做三次仿射变换，放主线程会让长列表卡顿，
  * 所以统一丢到两条后台线程上做，完成后回主线程填进 ImageView。
+ * 具体画什么交给 {@link ItemIcons}：方块成立方体、物品用原版贴图、缺图给占位图。
  */
 public final class IconLoader {
 
@@ -27,22 +28,20 @@ public final class IconLoader {
     private IconLoader() {
     }
 
-    /** 图标就绪回调，在主线程执行；渲染不出来时不会回调。 */
+    /** 图标就绪回调，在主线程执行；一张图都没画出来时不会回调。 */
     public interface OnIcon {
         void onIcon(Bitmap bitmap);
     }
 
-    /**
-     * 渲染方块图标并回调，供不能直接放 View 的地方使用（例如按钮的 drawableTop）。
-     */
-    public static void loadBlockBitmap(final Context context, final String blockId,
-                                       final File projectDir, final int sizePx,
-                                       final OnIcon callback) {
-        if (blockId == null || callback == null) return;
+    /** 后台画图标并回调，供放不了 View 的地方用（例如按钮的 drawableTop）。 */
+    public static void loadBitmap(final Context context, final String id,
+                                  final File projectDir, final int sizePx,
+                                  final OnIcon callback) {
+        if (id == null || id.isEmpty() || callback == null) return;
         POOL.execute(new Runnable() {
             @Override
             public void run() {
-                final Bitmap bmp = BlockIconRenderer.render(context, blockId, projectDir, sizePx);
+                final Bitmap bmp = ItemIcons.get(context, id, projectDir, sizePx);
                 if (bmp == null) return;
                 UiUtils.runOnUiThread(new Runnable() {
                     @Override
@@ -54,21 +53,23 @@ public final class IconLoader {
         });
     }
 
-    /**
-     * 给 ImageView 加载方块图标。方块渲染不出来时（物品、教育版方块等）什么也不做，
-     * 界面上就只显示文字。
-     */
-    public static void loadBlockIcon(final Context context, final String blockId,
-                                     final File projectDir, final int sizePx,
-                                     final ImageView target) {
-        if (target == null || blockId == null) return;
+    /** 给 ImageView 加载图标，画不出来时保持原样。 */
+    public static void load(final Context context, final String id,
+                            final File projectDir, final int sizePx,
+                            final ImageView target) {
+        if (target == null) return;
+        if (id == null || id.isEmpty()) {
+            target.setTag(null);
+            target.setImageDrawable(null);
+            return;
+        }
         // 打标记，列表复用同一个 View 时避免旧结果盖上去
-        target.setTag(blockId);
+        target.setTag(id);
         final WeakReference<ImageView> ref = new WeakReference<>(target);
         POOL.execute(new Runnable() {
             @Override
             public void run() {
-                final Bitmap bmp = BlockIconRenderer.render(context, blockId, projectDir, sizePx);
+                final Bitmap bmp = ItemIcons.get(context, id, projectDir, sizePx);
                 if (bmp == null) return;
                 UiUtils.runOnUiThread(new Runnable() {
                     @Override
@@ -76,7 +77,7 @@ public final class IconLoader {
                         ImageView iv = ref.get();
                         if (iv == null) return;
                         // 期间这个 View 已经被别的条目占用了，丢弃这次结果
-                        if (!blockId.equals(iv.getTag())) return;
+                        if (!id.equals(iv.getTag())) return;
                         iv.setImageBitmap(bmp);
                         iv.setVisibility(android.view.View.VISIBLE);
                     }
@@ -86,6 +87,7 @@ public final class IconLoader {
     }
 
     public static void clearCaches() {
+        ItemIcons.clearCache();
         BlockIconRenderer.clearCache();
         com.xtt.mcmodmaker.core.BlockTextureLib.clearCache();
     }

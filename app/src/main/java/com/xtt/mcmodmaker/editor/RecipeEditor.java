@@ -65,6 +65,9 @@ public class RecipeEditor {
     private static final String[] BREWING_TAGS = {"brewing_stand"};
     private static final String[] SMITHING_TAGS = {"smithing_table"};
 
+    /** 有序合成格子的固定高度：有图标和没图标的高度必须一致，否则一排格子参差不齐。 */
+    private static final int CELL_HEIGHT_DP = 78;
+
     private final Context context;
     private final Host host;
     private final RecipeStore store = new RecipeStore();
@@ -399,19 +402,18 @@ public class RecipeEditor {
                 // 格子 = 按钮铺满 + 右上角字母角标
                 FrameLayout wrapper = new FrameLayout(context);
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                        0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+                        0, UiUtils.dp(context, CELL_HEIGHT_DP), 1f);
                 lp.setMargins(m, m, m, m);
                 wrapper.setLayoutParams(lp);
 
                 OreButton cell = new OreButton(context);
                 FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(
                         FrameLayout.LayoutParams.MATCH_PARENT,
-                        FrameLayout.LayoutParams.WRAP_CONTENT);
+                        FrameLayout.LayoutParams.MATCH_PARENT);
                 cell.setLayoutParams(clp);
                 cell.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
                 cell.setMaxLines(1);
                 cell.setGravity(Gravity.CENTER);
-                cell.setMinHeight(UiUtils.dp(context, 62));
                 cell.setOnClickListener(new View.OnClickListener() {
                     @Override public void onClick(View v) {
                         onCellClick(rr, cc);
@@ -484,18 +486,18 @@ public class RecipeEditor {
     }
 
     /**
-     * 给格子挂方块图标。
+     * 给格子挂物品图标。
      *
      * OreButton 是普通 Button，放不了 View，所以用 IconLoader 在后台把图画出来，
      * 回来之后设成 drawableTop —— 图标在上、名字在下。
-     * 不是方块（普通物品）时渲染会返回 null，就只留文字。
+     * 方块渲染成立方体、普通物品用原版贴图、都缺就上占位图，格子里不会有空档。
      */
     private void attachCellIcon(final OreButton cell, final String id) {
         cell.setCompoundDrawables(null, null, null, null);
         final String pendingId = id;
         cell.setTag(pendingId);
         final int px = UiUtils.dp(context, 26);
-        IconLoader.loadBlockBitmap(context, id, host.projectDir(), px, new IconLoader.OnIcon() {
+        IconLoader.loadBitmap(context, id, host.projectDir(), px, new IconLoader.OnIcon() {
             @Override
             public void onIcon(Bitmap bitmap) {
                 // 期间格子可能已经被换成别的物品了，丢弃过期结果

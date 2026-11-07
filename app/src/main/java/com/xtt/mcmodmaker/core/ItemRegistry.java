@@ -260,6 +260,20 @@ public final class ItemRegistry {
         return shortId(id);
     }
 
+    /** 清单里记着这个 id 是方块吗；不认识的 id 返回 false。 */
+    public static boolean isBlock(Context context, String id) {
+        if (id == null || id.isEmpty()) return false;
+        synchronized (ItemRegistry.class) {
+            for (Entry e : custom) {
+                if (id.equals(e.id)) return e.block;
+            }
+        }
+        for (Entry e : vanilla(context)) {
+            if (id.equals(e.id)) return e.block;
+        }
+        return false;
+    }
+
     /** 这个 id 是否在清单里。 */
     public static boolean exists(Context context, String id) {
         if (id == null || id.isEmpty()) return false;
