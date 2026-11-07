@@ -81,6 +81,19 @@ public final class RecipeModel {
     public ItemRef result;
     public int resultCount = 1;
 
+    /**
+     * 有序合成的额外产出。
+     *
+     * 官方文档写明有序配方的 result 可以写成数组：第一个放输出槽，
+     * 其余的合成完成时直接进玩家背包；无序配方不支持数组，所以这里只对有序合成有意义。
+     */
+    public final List<ItemRef> extraResults = new ArrayList<>();
+
+    /** 这种配方能不能写多个产出。 */
+    public boolean multiResultSupported() {
+        return type == SHAPED;
+    }
+
     // ==================== 保真用 ====================
 
     /** 顶层除 format_version 与类型键之外的字段。 */
@@ -182,7 +195,7 @@ public final class RecipeModel {
         }
 
         if (m.type == SHAPED || m.type == SHAPELESS) {
-            m.readResultObject(body.optJSONObject("result"));
+            m.readResults(body.opt("result"));
         }
 
         // 收集本类型不认识的 body 字段
@@ -293,6 +306,29 @@ public final class RecipeModel {
         }
     }
 
+    /** 解析 result：单个对象，或者有序合成的数组形式。 */
+    private void readResults(Object raw) {
+        if (raw == null || raw == JSONObject.NULL) return;
+        if (raw instanceof JSONArray) {
+            JSONArray arr = (JSONArray) raw;
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) continue;
+                ItemRef r = ItemRef.fromJson(o);
+                if (r == null || r.isEmpty()) continue;
+                if (result == null) {
+                    result = r;
+                    resultCount = o.optInt("count", 1);
+                    if (resultCount <= 0) resultCount = 1;
+                } else {
+                    extraResults.add(r);
+                }
+            }
+            return;
+        }
+        if (raw instanceof JSONObject) readResultObject((JSONObject) raw);
+    }
+
     private void readResultObject(JSONObject resultObj) {
         if (resultObj == null) return;
         ItemRef r = ItemRef.fromJson(resultObj);
@@ -393,9 +429,7 @@ public final class RecipeModel {
         }
         body.put("key", k);
 
-        if (result != null && !result.isEmpty()) {
-            body.put("result", result.toJsonWithCount(resultCount));
-        }
+        writeResult(body);
     }
 
     private void writeShapeless(JSONObject body) throws Exception {
@@ -404,9 +438,28 @@ public final class RecipeModel {
             if (r != null && !r.isEmpty()) arr.put(r.toJson());
         }
         body.put("ingredients", arr);
-        if (result != null && !result.isEmpty()) {
-            body.put("result", result.toJsonWithCount(resultCount));
+        writeResult(body);
+    }
+
+    /**
+     * 写 result 字段。
+     *
+     * 只有一件产出时写成对象（最常见、兼容性最好）；有序合成有多件时写成数组。
+     */
+    private void writeResult(JSONObject body) throws Exception {
+        if (result == null || result.isEmpty()) return;
+        List<ItemRef> extras = new ArrayList<>();
+        for (ItemRef r : extraResults) {
+            if (r != null && !r.isEmpty()) extras.add(r);
         }
+        if (extras.isEmpty()) {
+            body.put("result", result.toJsonWithCount(resultCount));
+            return;
+        }
+        JSONArray arr = new JSONArray();
+        arr.put(result.toJsonWithCount(resultCount));
+        for (ItemRef r : extras) arr.put(r.toJsonWithCount(1));
+        body.put("result", arr);
     }
 
     private void writeUnlock(JSONObject body) throws Exception {
@@ -592,6 +645,9 @@ public final class RecipeModel {
                     if (r == null || r.isEmpty()) errs.add("图案里的 " + c + " 还没指定物品");
                 }
                 if (result == null || result.isEmpty()) errs.add("还没有设置产出物品");
+                for (ItemRef r : extraResults) {
+                    if (r == null || r.isEmpty()) errs.add("有一个额外产出还没选物品");
+                }
                 break;
             }
             case SHAPELESS: {

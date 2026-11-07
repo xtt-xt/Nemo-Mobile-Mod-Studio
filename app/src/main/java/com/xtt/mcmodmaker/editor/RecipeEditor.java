@@ -199,6 +199,17 @@ public class RecipeEditor {
     // ==================== 可视化主体 ====================
 
     private void showVisual() {
+        showVisual(false);
+    }
+
+    /**
+     * 画出可视化界面。
+     *
+     * @param reuseModel true 表示沿用内存里的模型（结构改动后重建界面时用），
+     *                   否则从磁盘重新读一遍。不沿用的话，刚改的解锁方式之类
+     *                   还没落盘的改动会被磁盘上的旧内容盖掉。
+     */
+    private void showVisual(boolean reuseModel) {
         if (currentFile == null || contentArea == null) return;
         contentArea.removeAllViews();
         cells[0][0] = null;
@@ -207,24 +218,31 @@ public class RecipeEditor {
         issueContainer = null;
         unlockButton = null;
 
-        String raw = FileUtils.readText(currentFile);
-        RecipeModel parsed = null;
-        String parseError = null;
-        try {
-            parsed = RecipeModel.parse(raw);
-        } catch (Exception e) {
-            parseError = String.valueOf(e.getMessage());
-        }
-
-        if (parsed == null) {
-            contentArea.addView(errorBlock("配方文件解析失败", parseError));
-            return;
+        RecipeModel parsed;
+        boolean mergedOnOpen = false;
+        if (reuseModel && model != null) {
+            parsed = model;
+        } else {
+            String raw = FileUtils.readText(currentFile);
+            String parseError = null;
+            parsed = null;
+            try {
+                parsed = RecipeModel.parse(raw);
+            } catch (Exception e) {
+                parseError = String.valueOf(e.getMessage());
+            }
+            if (parsed == null) {
+                contentArea.addView(errorBlock("配方文件解析失败", parseError));
+                return;
+            }
         }
 
         model = parsed;
-        store.attach(currentFile, model);
-        // 打开就先把重复的字母并掉：同一个物品不该占两个字母
-        boolean mergedOnOpen = model.mergeSameItems();
+        if (!reuseModel) {
+            store.attach(currentFile, model);
+            // 打开就先把重复的字母并掉：同一个物品不该占两个字母
+            mergedOnOpen = model.mergeSameItems();
+        }
 
         if (!model.supported()) {
             contentArea.addView(errorBlock("这个配方无法可视化编辑",
@@ -277,7 +295,7 @@ public class RecipeEditor {
         if (model.type == RecipeModel.SHAPED || model.type == RecipeModel.SHAPELESS) {
             UiUtils.addGap(context, body, UiUtils.dp(context, 10));
             body.addView(sectionLabel("产出"));
-            body.addView(buildResultRow());
+            body.addView(buildResultBlock());
         }
 
         // 适用方块
@@ -290,10 +308,11 @@ public class RecipeEditor {
         body.addView(sectionLabel("解锁方式"));
         body.addView(buildUnlockBlock());
 
-        // 兜底：写回初始文件，保证「打开即保存」不会改坏东西
-        store.resume();
-        // 打开时并掉了重复字母，就把合并结果落盘，免得界面看着和文件对不上
-        if (mergedOnOpen) store.markDirty();
+        if (!reuseModel) {
+            store.resume();
+            // 打开时并掉了重复字母，就把合并结果落盘，免得界面看着和文件对不上
+            if (mergedOnOpen) store.markDirty();
+        }
         refreshIssues();
     }
 
@@ -404,6 +423,7 @@ public class RecipeEditor {
             refs.add(model.smithResult);
         }
         refs.add(model.result);
+        refs.addAll(model.extraResults);
         refs.addAll(model.unlockItems);
 
         List<String> seen = new ArrayList<>();
@@ -509,15 +529,25 @@ public class RecipeEditor {
             }
             grid.addView(row);
         }
-        parent.addView(grid);
+        // 左边九宫格、右边字母映射，并排放在一行里
+        LinearLayout combo = new LinearLayout(context);
+        combo.setOrientation(LinearLayout.HORIZONTAL);
+        combo.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        grid.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.35f));
+        combo.addView(grid);
 
         keySummary = new LinearLayout(context);
         keySummary.setOrientation(LinearLayout.VERTICAL);
         LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        sp.topMargin = UiUtils.dp(context, 10);
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        sp.leftMargin = UiUtils.dp(context, 10);
         keySummary.setLayoutParams(sp);
-        parent.addView(keySummary);
+        combo.addView(keySummary);
+
+        parent.addView(combo);
 
         renderGrid();
     }
@@ -534,16 +564,19 @@ public class RecipeEditor {
                 ItemRef item = letter == ' ' ? null : model.key.get(letter);
                 if (letter == ' ') {
                     cell.card.setStyleSheet(StyleSheet.STYLE_INACTIVATED);
-                    cell.name.setText("＋");
-                    cell.name.setTextColor(Color.parseColor("#8A8A8A"));
+                    cell.name.setText("+");
+                    cell.name.setTextSize(22);
+                    cell.name.setTextColor(Color.parseColor("#6E6E6E"));
                     cell.icon.setVisibility(View.GONE);
                 } else if (item == null || item.isEmpty()) {
                     cell.card.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+                    cell.name.setTextSize(9);
                     cell.name.setText("未指定");
                     cell.name.setTextColor(Color.parseColor("#E0A030"));
                     cell.icon.setVisibility(View.GONE);
                 } else {
                     cell.card.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+                    cell.name.setTextSize(9);
                     cell.name.setText(ItemRegistry.nameOf(context, item.id));
                     cell.name.setTextColor(Color.WHITE);
                     loadCellIcon(cell, item.id);
@@ -609,7 +642,7 @@ public class RecipeEditor {
         LinearLayout row = new LinearLayout(context);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, UiUtils.dp(context, 2), 0, UiUtils.dp(context, 2));
+        row.setPadding(0, UiUtils.dp(context, 3), 0, UiUtils.dp(context, 3));
         row.setOnClickListener(onClick);
 
         boolean missing = item == null || item.isEmpty();
@@ -623,13 +656,13 @@ public class RecipeEditor {
         key.setBackgroundColor(Color.parseColor("#4A4A4A"));
         LinearLayout.LayoutParams klp = new LinearLayout.LayoutParams(
                 UiUtils.dp(context, 20), UiUtils.dp(context, 20));
-        klp.rightMargin = UiUtils.dp(context, 8);
+        klp.rightMargin = UiUtils.dp(context, 7);
         key.setLayoutParams(klp);
         row.addView(key);
 
         if (missing) {
             OreTextView name = new OreTextView(context);
-            name.setText("未指定物品，点击选择");
+            name.setText("未指定物品");
             name.setTextColor(Color.parseColor("#E0A030"));
             name.setTextSize(11);
             name.setLayoutParams(new LinearLayout.LayoutParams(
@@ -638,45 +671,31 @@ public class RecipeEditor {
             return row;
         }
 
-        String display = ItemRegistry.nameOf(context, item.id);
-        ItemRegistry.Entry entry = findEntry(item.id);
-        boolean distinct = entry != null ? entry.hasDistinctName() : !display.equals(shortId(item));
+        // 映射这一栏宽度有限，名字在上、id 与附加值缩成一行小字在下面
+        LinearLayout texts = new LinearLayout(context);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        texts.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         OreTextView name = new OreTextView(context);
-        name.setText(display);
+        name.setText(ItemRegistry.nameOf(context, item.id));
         name.setTextColor(Color.parseColor("#DDDDDD"));
         name.setTextSize(11);
         name.setMaxLines(1);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        name.setLayoutParams(new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        row.addView(name);
+        texts.addView(name);
 
-        if (distinct) {
-            OreTextView idText = new OreTextView(context);
-            idText.setText(shortId(item));
-            idText.setTextColor(Color.parseColor("#7A7A7A"));
-            idText.setTextSize(9);
-            idText.setMaxLines(1);
-            idText.setEllipsize(android.text.TextUtils.TruncateAt.START);
-            LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            ilp.leftMargin = UiUtils.dp(context, 8);
-            idText.setLayoutParams(ilp);
-            row.addView(idText);
-        }
+        StringBuilder sub = new StringBuilder(shortId(item));
+        if (item.hasData()) sub.append("   data ").append(item.data);
+        OreTextView idText = new OreTextView(context);
+        idText.setText(sub.toString());
+        idText.setTextColor(Color.parseColor(item.hasData() ? "#7ED17E" : "#7A7A7A"));
+        idText.setTextSize(9);
+        idText.setMaxLines(1);
+        idText.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        texts.addView(idText);
 
-        if (item.hasData()) {
-            OreTextView dataText = new OreTextView(context);
-            dataText.setText("data " + item.data);
-            dataText.setTextColor(Color.parseColor("#7ED17E"));
-            dataText.setTextSize(9);
-            LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            dlp.leftMargin = UiUtils.dp(context, 8);
-            dataText.setLayoutParams(dlp);
-            row.addView(dataText);
-        }
+        row.addView(texts);
         return row;
     }
 
@@ -698,32 +717,86 @@ public class RecipeEditor {
         }
     }
 
+    /**
+     * 格子的修改弹窗：上面是当前物品（图标 + 名字 + id），下面是四个竖排按钮。
+     *
+     * 「更换物品」改的是字母对应的映射，同字母的格子会一起变；
+     * 「单独更换」先给这个格子分一个新字母再改，只影响这一格。
+     */
     private void showCellMenu(final int row, final int col) {
         char letter = model.pattern[row].charAt(col);
         final ItemRef item = model.key.get(letter);
+
         LinearLayout box = new LinearLayout(context);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(UiUtils.dp(context, 6), UiUtils.dp(context, 6),
-                UiUtils.dp(context, 6), UiUtils.dp(context, 6));
-        OreTextView info = new OreTextView(context);
-        info.setText(letter + " = " + (item == null ? "未指定" : item.asString()));
-        info.setTextColor(Color.WHITE);
-        info.setTextSize(11);
-        box.addView(info);
+        int pad = UiUtils.dp(context, 8);
+        box.setPadding(pad, pad, pad, pad);
+
+        LinearLayout head = new LinearLayout(context);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+
+        ImageView icon = new ImageView(context);
+        int iconPx = UiUtils.dp(context, 40);
+        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(iconPx, iconPx);
+        ilp.rightMargin = UiUtils.dp(context, 10);
+        icon.setLayoutParams(ilp);
+        icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        icon.setVisibility(View.INVISIBLE);
+        head.addView(icon);
+        if (item != null && !item.isEmpty()) {
+            IconLoader.load(context, item.id, host.projectDir(), iconPx, icon);
+        }
+
+        LinearLayout texts = new LinearLayout(context);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        texts.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        OreTextView name = new OreTextView(context);
+        name.setText(item == null || item.isEmpty() ? "未指定物品"
+                : ItemRegistry.nameOf(context, item.id));
+        name.setTextColor(Color.WHITE);
+        name.setTextSize(13);
+        name.setMaxLines(1);
+        name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        texts.addView(name);
+
+        OreTextView idText = new OreTextView(context);
+        idText.setText(letter + " = " + (item == null ? "未指定" : item.asString())
+                + (item != null && item.hasData() ? "   data " + item.data : ""));
+        idText.setTextColor(Color.parseColor("#8A8A8A"));
+        idText.setTextSize(10);
+        idText.setMaxLines(2);
+        texts.addView(idText);
+
+        head.addView(texts);
+        box.addView(head);
+
+        // 同字母还出现在别的格子里时才提一句，免得用户以为「单独更换」没区别
+        if (item != null && !item.isEmpty() && countLetter(letter) > 1) {
+            OreTextView tip = new OreTextView(context);
+            tip.setText("这个字母还用在另外 " + (countLetter(letter) - 1) + " 个格子上");
+            tip.setTextColor(Color.parseColor("#9A9A9A"));
+            tip.setTextSize(9);
+            tip.setPadding(0, UiUtils.dp(context, 8), 0, 0);
+            box.addView(tip);
+        }
 
         OreDialogBuilder b = new OreDialogBuilder(context);
         b.setTitle("第 " + (row + 1) + " 行 第 " + (col + 1) + " 列");
         b.setView(box);
-        b.setButtonOrientation(LinearLayout.HORIZONTAL);
-        b.setNegativeButton("取消", StyleSheet.STYLE_DARK_GRAY, new DialogInterface.OnClickListener() {
-            @Override public void onClick(DialogInterface d, int which) {
-                d.dismiss();
-            }
-        });
+        b.setButtonOrientation(LinearLayout.VERTICAL);
         b.addButton("更换物品", StyleSheet.STYLE_GREEN, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface d, int which) {
                 d.dismiss();
                 pickForCell(row, col);
+            }
+        });
+        b.addButton("单独更换", StyleSheet.STYLE_DARK_GRAY, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+                pickForSingleCell(row, col);
             }
         });
         b.addButton("清空", StyleSheet.STYLE_RED, new DialogInterface.OnClickListener() {
@@ -732,7 +805,45 @@ public class RecipeEditor {
                 clearCell(row, col);
             }
         });
-        b.show();
+        b.addButton("取消", StyleSheet.STYLE_DARK_GRAY, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+            }
+        });
+        androidx.appcompat.app.AlertDialog dialog = b.show();
+        android.view.Window w = dialog.getWindow();
+        if (w != null) {
+            android.util.DisplayMetrics dm = context.getResources().getDisplayMetrics();
+            w.setLayout((int) (Math.min(dm.widthPixels, dm.heightPixels) * 0.62f),
+                    android.view.WindowManager.LayoutParams.WRAP_CONTENT);
+        }
+    }
+
+    /** 这个字母在图案里出现了几次。 */
+    private int countLetter(char letter) {
+        int n = 0;
+        for (String row : model.pattern) {
+            for (int i = 0; i < row.length(); i++) {
+                if (row.charAt(i) == letter) n++;
+            }
+        }
+        return n;
+    }
+
+    /** 只改这一格：先给它一个新字母，再选物品。 */
+    private void pickForSingleCell(final int row, final int col) {
+        char existing = model.pattern[row].charAt(col);
+        ItemRef current = existing == ' ' ? null : model.key.get(existing);
+        pick("第 " + (row + 1) + " 行 第 " + (col + 1) + " 列的物品（只改这一个）",
+                current, new ItemPickerDialog.OnPick() {
+                    @Override public void onPick(ItemRef item) {
+                        char letter = model.nextFreeLetter();
+                        model.key.put(letter, item);
+                        model.pattern[row] = replaceChar(model.pattern[row], col, letter);
+                        renderGrid();
+                        changed();
+                    }
+                });
     }
 
     private void pickForCell(final int row, final int col) {
@@ -1125,23 +1236,32 @@ public class RecipeEditor {
 
     // ==================== 产出 ====================
 
-    private View buildResultRow() {
+    /** 一件产出：[物品按钮] [数量]。 */
+    private View resultRow(final boolean primary, final int extraIndex) {
         LinearLayout row = new LinearLayout(context);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        ItemRef current = primary ? model.result
+                : (extraIndex < model.extraResults.size() ? model.extraResults.get(extraIndex) : null);
 
         final OreButton btn = new OreButton(context);
         btn.setMaxLines(1);
         btn.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        btn.setLayoutParams(new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        bindItem(btn, model.result);
+        final LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        btn.setLayoutParams(blp);
+        bindItem(btn, current);
         btn.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
-                pick("选择产出物品", model.result,
+                pick(primary ? "选择产出物品" : "选择额外产出",
+                        primary ? model.result : currentOfButton(btn),
                         new ItemPickerDialog.OnPick() {
                             @Override public void onPick(ItemRef item) {
-                                model.result = item;
+                                if (primary) model.result = item;
+                                else model.extraResults.set(extraIndex, item);
                                 bindItem(btn, item);
                                 changed();
                             }
@@ -1150,9 +1270,11 @@ public class RecipeEditor {
         });
         btn.setOnLongClickListener(new View.OnLongClickListener() {
             @Override public boolean onLongClick(View v) {
-                showDataEditor(model.result, new ItemSetter() {
+                showDataEditor(currentOfButton(btn), new ItemSetter() {
                     @Override public void set(ItemRef updated) {
-                        model.result = updated;
+                        if (updated == null) return;
+                        if (primary) model.result = updated;
+                        else model.extraResults.set(extraIndex, updated);
                         bindItem(btn, updated);
                         changed();
                     }
@@ -1166,7 +1288,8 @@ public class RecipeEditor {
         count.setHint("数量");
         count.setSingleLine(true);
         count.setInputType(InputType.TYPE_CLASS_NUMBER);
-        count.setText(String.valueOf(model.resultCount));
+        count.setText(String.valueOf(primary ? model.resultCount
+                : (current != null && current.count > 0 ? current.count : 1)));
         LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
                 UiUtils.dp(context, 72), LinearLayout.LayoutParams.WRAP_CONTENT);
         clp.leftMargin = UiUtils.dp(context, 6);
@@ -1179,16 +1302,81 @@ public class RecipeEditor {
                 if (t.isEmpty()) return;
                 try {
                     int n = Integer.parseInt(t);
-                    if (n > 0 && n != model.resultCount) {
+                    if (n <= 0) return;
+                    if (primary) {
+                        if (n == model.resultCount) return;
                         model.resultCount = n;
-                        changed();
+                    } else {
+                        ItemRef r = model.extraResults.get(extraIndex);
+                        if (r.count == n) return;
+                        r.count = n;
                     }
+                    changed();
                 } catch (NumberFormatException ignored) {
                 }
             }
         });
         row.addView(count);
+
+        // 额外产出可以删掉
+        if (!primary) {
+            OreButton del = new OreButton(context);
+            del.setText("×");
+            del.setStyleSheet(StyleSheet.STYLE_RED);
+            LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
+                    UiUtils.dp(context, 44), LinearLayout.LayoutParams.WRAP_CONTENT);
+            dlp.leftMargin = UiUtils.dp(context, 4);
+            del.setLayoutParams(dlp);
+            del.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    model.extraResults.remove(extraIndex);
+                    rebuildVisualKeepScroll();
+                    changed();
+                }
+            });
+            row.addView(del);
+        }
         return row;
+    }
+
+    /** 产出区：第一件 + 额外产出 + 「添加产出」。 */
+    private View buildResultBlock() {
+        LinearLayout box = new LinearLayout(context);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.addView(resultRow(true, -1));
+
+        if (!model.multiResultSupported()) return box;
+
+        for (int i = 0; i < model.extraResults.size(); i++) {
+            UiUtils.addGap(context, box, UiUtils.dp(context, 4));
+            box.addView(resultRow(false, i));
+        }
+
+        OreButton add = new OreButton(context);
+        add.setText("+ 添加产出");
+        add.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = UiUtils.dp(context, 6);
+        add.setLayoutParams(lp);
+        add.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                pick("添加额外产出", null, new ItemPickerDialog.OnPick() {
+                    @Override public void onPick(ItemRef item) {
+                        ItemRef r = item.copy();
+                        r.count = 1;
+                        model.extraResults.add(r);
+                        rebuildVisualKeepScroll();
+                        changed();
+                    }
+                });
+            }
+        });
+        box.addView(add);
+        if (!model.extraResults.isEmpty()) {
+            box.addView(hintText("第一件进输出槽，其余合成完成后直接放进背包"));
+        }
+        return box;
     }
 
     // ==================== 适用方块 ====================
@@ -1388,7 +1576,7 @@ public class RecipeEditor {
         int y = 0;
         View child = contentArea.getChildAt(1);
         if (child instanceof ScrollView) y = ((ScrollView) child).getScrollY();
-        showVisual();
+        showVisual(true);
         View again = contentArea.getChildAt(1);
         if (again instanceof ScrollView) ((ScrollView) again).scrollTo(0, y);
     }

@@ -327,6 +327,13 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
         if (mode == MODE_BROWSE) buildBrowseLeft();
         else if (mode == MODE_FOCUS) buildFocusLeft();
         else if (mode == MODE_EDIT) buildEditLeft();
+
+        // 三个面板的宽窄、中间列表的排版都跟着模式变，必须当场重排一次，
+        // 否则要等下一次点文件才看到新布局
+        leftPanel.requestLayout();
+        middlePanel.requestLayout();
+        rightPanel.requestLayout();
+        if (currentDir != null) loadFileList(currentDir);
     }
 
     private void buildBrowseLeft() {
@@ -429,7 +436,24 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
         leftContainer.removeAllViews();
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        addFunctionAccordion(panel);
+
+        OreButton btnBack = new OreButton(this);
+        btnBack.setText("返回主界面");
+        btnBack.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+        btnBack.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { finish(); }
+        });
+        panel.addView(btnBack);
+        UiUtils.addGap(this, panel, 6);
+
+        OreButton btnBackup = new OreButton(this);
+        btnBackup.setText("创建备份");
+        btnBackup.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+        btnBackup.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { createBackupInEditor(); }
+        });
+        panel.addView(btnBackup);
+
         leftContainer.addView(panel);
     }
 
@@ -730,9 +754,33 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
         middleContainer.addView(loading);
     }
 
+    /** 列表模式下名字后面的小字：目录写「目录」，文件写后缀。 */
+    private String subLabel(File file) {
+        if (file.isDirectory()) {
+            int n = 0;
+            File[] fs = file.listFiles();
+            if (fs != null) {
+                for (File f : fs) if (!f.getName().startsWith(".")) n++;
+            }
+            return n == 0 ? "空目录" : "目录 · " + n + " 项";
+        }
+        String name = file.getName();
+        int dot = name.lastIndexOf('.');
+        String ext = dot > 0 ? name.substring(dot + 1).toLowerCase() : "文件";
+        long kb = Math.max(1, file.length() / 1024);
+        return ext + " · " + (kb >= 1024 ? String.format("%.1f MB", kb / 1024f) : kb + " KB");
+    }
+
     private OreCard createFileCard(final File file, int width, boolean isListMode) {
         OreCard card = new OreCard(this);
-        card.setPadding(6, 8, 6, 8);
+        // 这些是像素不是 dp：之前写 6/8 时图标几乎贴着边框
+        if (isListMode) {
+            card.setPadding(UiUtils.dp(this, 10), UiUtils.dp(this, 8),
+                    UiUtils.dp(this, 10), UiUtils.dp(this, 8));
+        } else {
+            card.setPadding(UiUtils.dp(this, 4), UiUtils.dp(this, 8),
+                    UiUtils.dp(this, 4), UiUtils.dp(this, 8));
+        }
 
         LinearLayout cardLayout;
         if (isListMode) {
@@ -777,16 +825,39 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
         nameText.setLineSpacing(0, 0.95f);
 
         if (isListMode) {
-            int iconSize = 44;
+            // 列表模式：图标独占一块定宽区域，右边是名字 + 类型/后缀小字
+            int iconSize = UiUtils.dp(this, 40);
             LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(iconSize, iconSize);
-            iconParams.setMargins(0, 0, 12, 0);
+            iconParams.rightMargin = UiUtils.dp(this, 12);
+            iconParams.gravity = Gravity.CENTER_VERTICAL;
             icon.setLayoutParams(iconParams);
-            LinearLayout.LayoutParams textParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
-            nameText.setLayoutParams(textParams);
-            cardLayout.addView(icon);
-            cardLayout.addView(nameText);
-            card.setLayoutParams(new LinearLayout.LayoutParams(
+
+            LinearLayout texts = new LinearLayout(this);
+            texts.setOrientation(LinearLayout.VERTICAL);
+            texts.setLayoutParams(new LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f));
+
+            nameText.setGravity(Gravity.START);
+            nameText.setLayoutParams(new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+            texts.addView(nameText);
+
+            OreTextView sub = new OreTextView(this);
+            sub.setText(subLabel(file));
+            sub.setTextColor(Color.parseColor("#8A8A8A"));
+            sub.setTextSize(9);
+            sub.setMaxLines(1);
+            sub.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+            sub.setLayoutParams(new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+            texts.addView(sub);
+
+            cardLayout.addView(icon);
+            cardLayout.addView(texts);
+            LinearLayout.LayoutParams listParams = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            listParams.bottomMargin = UiUtils.dp(this, 6);
+            card.setLayoutParams(listParams);
         } else {
             int iconSize = (int) (width * 0.4);
             LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(iconSize, iconSize);
@@ -1220,8 +1291,9 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
                 saveFileContent(file, codeEditText.getText().toString());
                 Intent intent = new Intent(EditorActivity.this, SourceEditorActivity.class);
                 intent.putExtra(SourceEditorActivity.EXTRA_PROJECT_DIR, projectDir.getAbsolutePath());
+                // 必须是这个文件所在的目录，不能用中间面板当前浏览的目录
                 intent.putExtra(SourceEditorActivity.EXTRA_CURRENT_DIR,
-                        currentDir != null ? currentDir.getAbsolutePath() : file.getParentFile().getAbsolutePath());
+                        file.getParentFile().getAbsolutePath());
                 intent.putExtra(SourceEditorActivity.EXTRA_FILE_PATH, file.getAbsolutePath());
                 startActivity(intent);
             }

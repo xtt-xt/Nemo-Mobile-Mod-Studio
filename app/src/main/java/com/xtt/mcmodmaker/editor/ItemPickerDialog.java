@@ -24,6 +24,7 @@ import com.xtt.mcmodmaker.core.ItemRegistry;
 import com.xtt.mcmodmaker.util.UiUtils;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.List;
 
 import dev1503.oreui.StyleSheet;
@@ -49,7 +50,10 @@ public final class ItemPickerDialog {
 
     private static final int COLUMNS = 3;
     private static final int CELL_HEIGHT_DP = 94;
-    private static final int MAX_ROWS = 60;
+    /** 每屏先画这么多行，滑到底再追加一批：一次画 60 个格子会明显卡一下。 */
+    private static final int PAGE_ROWS = 5;
+    /** 候选池上限，超出部分靠搜索缩小。 */
+    private static final int MAX_ROWS = 120;
     private static final long SEARCH_DEBOUNCE_MS = 180;
 
     private final Context context;
@@ -60,8 +64,13 @@ public final class ItemPickerDialog {
 
     private OreEditText searchBox;
     private LinearLayout gridContainer;
-    private OreTextView statusText;
+    private ScrollView scroll;
     private androidx.appcompat.app.AlertDialog dialog;
+
+    /** 当前的候选，翻页时从里面取。 */
+    private List<ItemRegistry.Entry> results = new ArrayList<>();
+    /** 已经画出来的条数。 */
+    private int shownCount;
 
     private final Runnable rebuildTask = new Runnable() {
         @Override
@@ -122,13 +131,7 @@ public final class ItemPickerDialog {
             content.addView(cur);
         }
 
-        statusText = new OreTextView(context);
-        statusText.setTextColor(Color.parseColor("#AAAAAA"));
-        statusText.setTextSize(10);
-        statusText.setPadding(UiUtils.dp(context, 6), UiUtils.dp(context, 4), 0, UiUtils.dp(context, 2));
-        content.addView(statusText);
-
-        ScrollView scroll = new ScrollView(context);
+        scroll = new ScrollView(context);
         scroll.setLayoutParams(new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
         scroll.setClipToPadding(false);
@@ -136,6 +139,18 @@ public final class ItemPickerDialog {
         gridContainer.setOrientation(LinearLayout.VERTICAL);
         scroll.addView(gridContainer);
         content.addView(scroll);
+
+        // 滑到底自动续下一批
+        scroll.setOnScrollChangeListener(new View.OnScrollChangeListener() {
+            @Override
+            public void onScrollChange(View v, int x, int y, int oldX, int oldY) {
+                View child = scroll.getChildAt(0);
+                if (child == null) return;
+                if (y + scroll.getHeight() >= child.getHeight() - UiUtils.dp(context, 120)) {
+                    appendPage();
+                }
+            }
+        });
 
         builder.getRootLayout().addView(content,
                 new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -178,14 +193,15 @@ public final class ItemPickerDialog {
         rebuildResults();
     }
 
+    /** 重新搜索结果，并画第一批。 */
     private void rebuildResults() {
         if (gridContainer == null) return;
-        gridContainer.removeAllViews();
-
         String query = searchBox == null ? "" : searchBox.getText().toString().trim();
-        List<ItemRegistry.Entry> all = ItemRegistry.search(context, query, MAX_ROWS + 50);
+        results = ItemRegistry.search(context, query, MAX_ROWS);
+        gridContainer.removeAllViews();
+        shownCount = 0;
 
-        if (all.isEmpty()) {
+        if (results.isEmpty()) {
             OreTextView empty = new OreTextView(context);
             empty.setText("没有匹配的物品，可以点「手动输入」直接填 id");
             empty.setTextColor(Color.parseColor("#AAAAAA"));
@@ -193,32 +209,36 @@ public final class ItemPickerDialog {
             empty.setGravity(Gravity.CENTER);
             empty.setPadding(0, UiUtils.dp(context, 24), 0, 0);
             gridContainer.addView(empty);
-            statusText.setText("");
             return;
         }
+        appendPage();
+        if (scroll != null) scroll.scrollTo(0, 0);
+    }
 
-        int shown = Math.min(all.size(), MAX_ROWS);
-        for (int i = 0; i < shown; i += COLUMNS) {
-            LinearLayout row = new LinearLayout(context);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            for (int j = 0; j < COLUMNS; j++) {
-                int index = i + j;
-                if (index < shown) {
-                    row.addView(buildCell(all.get(index)), cellParams());
-                } else {
-                    // 末尾不足一行时补空位，保证每格一样宽
+    /** 追加一页格子。 */
+    private void appendPage() {
+        if (gridContainer == null || results == null) return;
+        int end = Math.min(shownCount + PAGE_ROWS * COLUMNS, results.size());
+        if (end <= shownCount) return;
+
+        // 上一页末行可能没填满，接着往里补，不要另起一行留个空洞
+        LinearLayout row = null;
+        for (int i = shownCount; i < end; i++) {
+            if (i % COLUMNS == 0) {
+                row = new LinearLayout(context);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                gridContainer.addView(row);
+                UiUtils.addGap(context, gridContainer, UiUtils.dp(context, 4));
+            }
+            row.addView(buildCell(results.get(i)), cellParams());
+            // 末尾不足一行时补空位，保证每格一样宽
+            if (i == results.size() - 1) {
+                for (int j = row.getChildCount(); j < COLUMNS; j++) {
                     row.addView(new View(context), cellParams());
                 }
             }
-            gridContainer.addView(row);
-            UiUtils.addGap(context, gridContainer, UiUtils.dp(context, 4));
         }
-
-        if (all.size() > shown) {
-            statusText.setText("显示 " + shown + " / 共 " + all.size() + " 条，输入更多关键字可缩小范围");
-        } else {
-            statusText.setText("共 " + all.size() + " 条");
-        }
+        shownCount = end;
     }
 
     private LinearLayout.LayoutParams cellParams() {
@@ -238,7 +258,7 @@ public final class ItemPickerDialog {
                 UiUtils.dp(context, 3), UiUtils.dp(context, 5));
 
         ImageView icon = new ImageView(context);
-        int iconSize = UiUtils.dp(context, 34);
+        int iconSize = UiUtils.dp(context, 32);
         LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(iconSize, iconSize);
         ilp.bottomMargin = UiUtils.dp(context, 3);
         icon.setLayoutParams(ilp);
