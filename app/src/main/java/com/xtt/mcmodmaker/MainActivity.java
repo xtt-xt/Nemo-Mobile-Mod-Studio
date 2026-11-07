@@ -454,16 +454,6 @@ public class MainActivity extends Activity {
 
         cardLayout.addView(textLayout);
 
-        OreTextView arrow = new OreTextView(this);
-        arrow.setText(">");
-        arrow.setTextColor(Color.parseColor("#888888"));
-        arrow.setTextSize(16);
-        LinearLayout.LayoutParams arrowParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        arrowParams.leftMargin = UiUtils.dp(this, 8);
-        arrow.setLayoutParams(arrowParams);
-        cardLayout.addView(arrow);
-
         card.addView(cardLayout);
         card.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
