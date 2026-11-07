@@ -11,6 +11,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.BitmapDrawable;
+import android.util.LruCache;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -31,6 +32,7 @@ import android.widget.ScrollView;
 import android.widget.Toast;
 
 import com.xtt.mcmodmaker.core.Constants;
+import com.xtt.mcmodmaker.core.ItemRegistry;
 import com.xtt.mcmodmaker.core.ModTemplates;
 import com.xtt.mcmodmaker.core.ProjectManager;
 import com.xtt.mcmodmaker.editor.FileNode;
@@ -96,6 +98,11 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
     private CodeEditor codeEditText;
     private String originalContent = "";
 
+    /** 缩略图缓存，按文件路径 + 目标宽度做键。 */
+    private LruCache<String, Bitmap> thumbCache;
+    /** 缩略图解码线程池，避免在主线程 decodeFile 造成进目录就卡。 */
+    private java.util.concurrent.ExecutorService thumbExecutor;
+
     // ==================== 生命周期 ====================
 
     @Override
@@ -126,6 +133,15 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
             getWindow().setStatusBarColor(Color.TRANSPARENT);
             getWindow().setNavigationBarColor(Color.TRANSPARENT);
         }
+
+        int cacheSize = (int) Math.min(Runtime.getRuntime().maxMemory() / 8, 32L * 1024 * 1024);
+        thumbCache = new LruCache<String, Bitmap>(cacheSize) {
+            @Override
+            protected int sizeOf(String key, Bitmap value) {
+                return value.getByteCount();
+            }
+        };
+        thumbExecutor = java.util.concurrent.Executors.newFixedThreadPool(2);
 
         recipeEditor = new RecipeEditor(this, this);
 
@@ -737,13 +753,10 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
             icon.setImageResource(R.drawable.ic_folder);
             icon.setColorFilter(Color.parseColor("#AAAAAA"));
         } else if (isImage) {
-            BitmapDrawable thumb = loadPixelThumbnail(file, width);
-            if (thumb != null) {
-                icon.setImageDrawable(thumb);
-            } else {
-                icon.setImageResource(android.R.drawable.ic_menu_gallery);
-                icon.setColorFilter(Color.parseColor("#AAAAAA"));
-            }
+            icon.setImageResource(android.R.drawable.ic_menu_gallery);
+            icon.setColorFilter(Color.parseColor("#AAAAAA"));
+            // 缩略图异步加载：先占位，解码完再换上，不阻塞列表
+            loadThumbnailAsync(file, width, icon);
         } else {
             icon.setImageResource(android.R.drawable.ic_menu_edit);
             icon.setColorFilter(Color.parseColor("#AAAAAA"));
@@ -791,6 +804,63 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
             }
         });
         return card;
+    }
+
+    /**
+     * 异步加载缩略图。
+     *
+     * 直接在主线程 decodeFile 的话，一进 textures 这种几百张图的目录就整页卡住，
+     * 所以这里先挂占位图，解码完成后回主线程替换。
+     */
+    private void loadThumbnailAsync(final File file, final int targetWidth, final ImageView target) {
+        final String key = file.getAbsolutePath() + "#" + targetWidth;
+        Bitmap cached = thumbCache.get(key);
+        if (cached != null) {
+            applyThumb(target, cached);
+            return;
+        }
+        final java.lang.ref.WeakReference<ImageView> ref = new java.lang.ref.WeakReference<>(target);
+        final long modified = file.lastModified();
+        thumbExecutor.execute(new Runnable() {
+            @Override
+            public void run() {
+                // 文件在排队期间被改了就不用这个结果
+                if (file.lastModified() != modified) return;
+                final Bitmap bitmap = decodeThumbnail(file, targetWidth);
+                if (bitmap == null) return;
+                thumbCache.put(key, bitmap);
+                UiUtils.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        ImageView iv = ref.get();
+                        if (iv != null) applyThumb(iv, bitmap);
+                    }
+                });
+            }
+        });
+    }
+
+    private void applyThumb(ImageView view, Bitmap bitmap) {
+        BitmapDrawable d = new BitmapDrawable(getResources(), bitmap);
+        d.setFilterBitmap(false);
+        view.clearColorFilter();
+        view.setImageDrawable(d);
+    }
+
+    /** 只解码缩略图用的采样版本，不保留原图。 */
+    private Bitmap decodeThumbnail(File imageFile, int targetWidth) {
+        try {
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(imageFile.getAbsolutePath(), options);
+            int req = targetWidth > 0 ? targetWidth : 150;
+            options.inSampleSize = calculateInSampleSize(options, req, req);
+            options.inJustDecodeBounds = false;
+            options.inScaled = false;
+            return BitmapFactory.decodeFile(imageFile.getAbsolutePath(), options);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private BitmapDrawable loadPixelThumbnail(File imageFile, int targetWidth) {
@@ -853,9 +923,13 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
     // ==================== 打开文件 ====================
 
     private void openFileInEditor(File file) {
+        // 切文件前把上一个配方没落盘的改动写下去，否则会被新页面覆盖掉
+        recipeEditor.flushPending();
         editorContainer.removeAllViews();
 
         if (isInRecipesDirectory(file) && file.getName().toLowerCase().endsWith(".json")) {
+            // 配方里要能引用本工程的自定义物品，每次进来重新扫一遍
+            ItemRegistry.reloadProject(this, projectDir);
             recipeEditor.open(file, editorContainer);
             return;
         }
@@ -888,6 +962,11 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
     public void showSourceEditor(File file) {
         editorContainer.removeAllViews();
         buildCodeEditor(file, editorContainer);
+    }
+
+    @Override
+    public File projectDir() {
+        return projectDir;
     }
 
     // ==================== 分类跳转 ====================
@@ -1155,6 +1234,35 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
         } catch (IOException e) {
             Toast.makeText(this, "保存失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
         }
+    }
+
+    // ==================== 返回与落盘 ====================
+
+    @Override
+    public void onBackPressed() {
+        // 先逐级往上级目录退，退到工程根目录才真的退出
+        if (currentDir != null && !currentDir.equals(projectDir)) {
+            File parent = currentDir.getParentFile();
+            if (parent != null && parent.getAbsolutePath().startsWith(projectPath)) {
+                loadFileList(parent);
+                return;
+            }
+        }
+        if (recipeEditor != null) recipeEditor.flushPending();
+        super.onBackPressed();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (thumbExecutor != null) thumbExecutor.shutdownNow();
+        if (recipeEditor != null) recipeEditor.flushPending();
+        super.onDestroy();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        if (recipeEditor != null) recipeEditor.flushPending();
     }
 
     // ==================== 删除 / 重命名 ====================

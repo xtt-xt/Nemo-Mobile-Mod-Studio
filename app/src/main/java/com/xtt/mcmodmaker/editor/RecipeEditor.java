@@ -3,28 +3,27 @@ package com.xtt.mcmodmaker.editor;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.text.Editable;
+import android.text.InputType;
 import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
-import android.widget.CompoundButton;
-import android.widget.GridLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Toast;
 
+import com.xtt.mcmodmaker.core.ItemRef;
+import com.xtt.mcmodmaker.core.ItemRegistry;
+import com.xtt.mcmodmaker.core.RecipeModel;
+import com.xtt.mcmodmaker.core.RecipeStore;
 import com.xtt.mcmodmaker.util.FileUtils;
 import com.xtt.mcmodmaker.util.UiUtils;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
-
 import java.io.File;
 import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
-import java.util.Set;
+import java.util.Map;
 
 import dev1503.oreui.StyleSheet;
 import dev1503.oreui.dialog.OreDialogBuilder;
@@ -35,8 +34,12 @@ import dev1503.oreui.widgets.OreSwitch;
 import dev1503.oreui.widgets.OreTextView;
 
 /**
- * 配方可视化编辑器。
- * 支持：有序/无序合成、熔炉、酿造、锻造配方的可视化编辑与自动保存。
+ * 配方的可视化编辑器。
+ *
+ * 与旧版的区别：
+ * 数据只活在 {@link RecipeModel} 里，界面是它的投影；改动先改模型再标脏，
+ * 由 {@link RecipeStore} 防抖落盘，不再每敲一个字符写一次文件。
+ * 物品一律从 {@link ItemPickerDialog} 选，不再手打 id。
  */
 public class RecipeEditor {
 
@@ -47,47 +50,53 @@ public class RecipeEditor {
 
         /** 切换到源码模式。 */
         void showSourceEditor(File file);
+
+        /** 取当前工程的根目录，用于扫描自定义物品。 */
+        File projectDir();
     }
+
+    private static final String[] CRAFTING_TAGS = {"crafting_table"};
+    private static final String[] SHAPELESS_TAGS = {"crafting_table", "stonecutter", "cartography_table"};
+    private static final String[] FURNACE_TAGS = {"furnace", "blast_furnace", "smoker", "campfire"};
+    private static final String[] BREWING_TAGS = {"brewing_stand"};
+    private static final String[] SMITHING_TAGS = {"smithing_table"};
 
     private final Context context;
     private final Host host;
+    private final RecipeStore store = new RecipeStore();
 
-    private File currentRecipeFile;
-    private LinearLayout recipeContentArea;
+    private File currentFile;
+    private RecipeModel model;
+    private LinearLayout contentArea;
 
-    private GridLayout recipeGrid;
-    private LinearLayout recipeMappingLayout;
-    private Set<String> selectedTags = new HashSet<>();
-    private JSONObject currentRecipeRoot;
-    private String currentRecipeType;
-
-    private OreEditText visualResultItem;
-    private OreEditText visualResultCount;
-
-    private String currentUnlockContext = "AlwaysUnlocked";
-    private List<String> unlockItems = new ArrayList<>();
-    private List<String> shapelessInputs = new ArrayList<>();
-    private List<String> furnaceInputs = new ArrayList<>();
-    private OreEditText brewingInputItem;
-    private OreEditText brewingReagentItem;
-    private OreEditText smithingTemplateItem;
-    private OreEditText smithingBaseItem;
-    private OreEditText smithingAdditionItem;
+    // 有序合成的格子，[行][列]
+    private final OreButton[][] cells = new OreButton[3][3];
+    private LinearLayout keySummary;
+    private LinearLayout listContainer;
+    private LinearLayout issueContainer;
+    private OreTextView unlockButton;
 
     public RecipeEditor(Context context, Host host) {
         this.context = context;
         this.host = host;
+        store.setListener(new RecipeStore.Listener() {
+            @Override
+            public void onSaveFailed(String message) {
+                Toast.makeText(RecipeEditor.this.context, "保存失败：" + message, Toast.LENGTH_LONG).show();
+            }
+        });
     }
 
     // ==================== 入口 ====================
 
-    /** 打开配方编辑器（含模式切换栏、删除按钮）。 */
+    /** 打开配方编辑器（顶部模式切换栏 + 删除按钮）。 */
     public void open(final File recipeFile, final LinearLayout editorContainer) {
         editorContainer.removeAllViews();
+        currentFile = recipeFile;
 
         LinearLayout modeBar = new LinearLayout(context);
         modeBar.setOrientation(LinearLayout.HORIZONTAL);
-        modeBar.setPadding(0, 0, 0, 8);
+        modeBar.setPadding(0, 0, 0, UiUtils.dp(context, 6));
 
         final OreButton btnVisual = new OreButton(context);
         btnVisual.setText("可视化编辑");
@@ -99,1071 +108,1114 @@ public class RecipeEditor {
         btnDelete.setText("删除配方");
         btnDelete.setStyleSheet(StyleSheet.STYLE_RED);
 
-        LinearLayout.LayoutParams btnParam = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
-        btnVisual.setLayoutParams(btnParam);
-        btnSource.setLayoutParams(btnParam);
-        btnDelete.setLayoutParams(btnParam);
+        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        btnVisual.setLayoutParams(bp);
+        btnSource.setLayoutParams(bp);
+        btnDelete.setLayoutParams(bp);
 
         modeBar.addView(btnVisual);
         modeBar.addView(btnSource);
         modeBar.addView(btnDelete);
         editorContainer.addView(modeBar);
 
-        final LinearLayout contentArea = new LinearLayout(context);
+        contentArea = new LinearLayout(context);
         contentArea.setOrientation(LinearLayout.VERTICAL);
-        contentArea.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        contentArea.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
         editorContainer.addView(contentArea);
 
-        showVisual(contentArea, recipeFile);
-
         btnVisual.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
+            @Override public void onClick(View v) {
                 btnVisual.setStyleSheet(StyleSheet.STYLE_GREEN);
                 btnSource.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-                contentArea.removeAllViews();
-                showVisual(contentArea, recipeFile);
+                showVisual();
             }
         });
         btnSource.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
+            @Override public void onClick(View v) {
+                store.flush();
                 btnSource.setStyleSheet(StyleSheet.STYLE_GREEN);
                 btnVisual.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
                 host.showSourceEditor(recipeFile);
             }
         });
         btnDelete.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                showDeleteRecipeConfirm(recipeFile);
+            @Override public void onClick(View v) {
+                confirmDelete(recipeFile);
             }
         });
+
+        showVisual();
     }
 
-    /** 在指定容器中展示可视化编辑界面。 */
-    public void showVisual(final LinearLayout container, final File recipeFile) {
-        currentRecipeFile = recipeFile;
-        recipeContentArea = container;
+    /** 离开页面前把没落盘的改动写下去。 */
+    public void flushPending() {
+        store.flush();
+    }
+
+    // ==================== 可视化主体 ====================
+
+    private void showVisual() {
+        if (currentFile == null || contentArea == null) return;
+        contentArea.removeAllViews();
+        cells[0][0] = null;
+        keySummary = null;
+        listContainer = null;
+        issueContainer = null;
+        unlockButton = null;
+
+        String raw = FileUtils.readText(currentFile);
+        RecipeModel parsed = null;
+        String parseError = null;
+        try {
+            parsed = RecipeModel.parse(raw);
+        } catch (Exception e) {
+            parseError = String.valueOf(e.getMessage());
+        }
+
+        if (parsed == null) {
+            contentArea.addView(errorBlock("配方文件解析失败", parseError));
+            return;
+        }
+
+        model = parsed;
+        store.attach(currentFile, model);
+
+        if (!model.supported()) {
+            contentArea.addView(errorBlock("这个配方无法可视化编辑",
+                    "不是编辑器认识的五种类型（有序 / 无序 / 熔炉 / 酿造 / 锻造），请用源码编辑。"));
+            return;
+        }
 
         ScrollView scroll = new ScrollView(context);
-        LinearLayout layout = new LinearLayout(context);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(8, 8, 8, 8);
+        scroll.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        LinearLayout body = new LinearLayout(context);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(UiUtils.dp(context, 4), UiUtils.dp(context, 2),
+                UiUtils.dp(context, 4), UiUtils.dp(context, 12));
+        scroll.addView(body);
+        contentArea.addView(scroll);
 
-        JSONObject root;
-        try {
-            root = new JSONObject(FileUtils.readText(recipeFile));
-        } catch (Exception e) {
-            OreTextView errText = new OreTextView(context);
-            errText.setText("无法解析配方");
-            errText.setTextColor(Color.WHITE);
-            layout.addView(errText);
-            scroll.addView(layout);
-            container.addView(scroll);
-            return;
-        }
-        currentRecipeRoot = root;
+        // 标题区
+        body.addView(headerBlock());
+        UiUtils.addGap(context, body, UiUtils.dp(context, 8));
 
-        // 识别配方类型
-        String recipeType = "";
-        JSONObject body = null;
-        String[] typeKeys = {
-                "minecraft:recipe_shaped", "minecraft:recipe_shapeless",
-                "minecraft:recipe_furnace", "minecraft:recipe_brewing_mix",
-                "minecraft:recipe_smithing_transform"
-        };
-        String[] typeIds = {
-                "recipe_shaped", "recipe_shapeless",
-                "recipe_furnace", "recipe_brewing_mix", "recipe_smithing_transform"
-        };
-        for (int i = 0; i < typeKeys.length; i++) {
-            if (root.has(typeKeys[i])) {
-                recipeType = typeIds[i];
-                body = root.optJSONObject(typeKeys[i]);
+        // 校验问题
+        issueContainer = new LinearLayout(context);
+        issueContainer.setOrientation(LinearLayout.VERTICAL);
+        body.addView(issueContainer);
+
+        // 类型专属区
+        body.addView(sectionLabel("配方内容"));
+        switch (model.type) {
+            case RecipeModel.SHAPED:
+                buildShaped(body);
                 break;
+            case RecipeModel.SHAPELESS:
+                buildShapeless(body);
+                break;
+            case RecipeModel.FURNACE:
+                buildFurnace(body);
+                break;
+            case RecipeModel.BREWING:
+                buildBrewing(body);
+                break;
+            case RecipeModel.SMITHING:
+                buildSmithing(body);
+                break;
+            default:
+                break;
+        }
+
+        // 产出（有序/无序）
+        if (model.type == RecipeModel.SHAPED || model.type == RecipeModel.SHAPELESS) {
+            UiUtils.addGap(context, body, UiUtils.dp(context, 10));
+            body.addView(sectionLabel("产出"));
+            body.addView(buildResultRow());
+        }
+
+        // 适用方块
+        UiUtils.addGap(context, body, UiUtils.dp(context, 10));
+        body.addView(sectionLabel("适用方块"));
+        body.addView(buildTagRow());
+
+        // 解锁方式
+        UiUtils.addGap(context, body, UiUtils.dp(context, 10));
+        body.addView(sectionLabel("解锁方式"));
+        body.addView(buildUnlockBlock());
+
+        // 兜底：写回初始文件，保证「打开即保存」不会改坏东西
+        store.resume();
+        refreshIssues();
+    }
+
+    private View headerBlock() {
+        LinearLayout box = new LinearLayout(context);
+        box.setOrientation(LinearLayout.VERTICAL);
+
+        OreTextView title = new OreTextView(context);
+        title.setText(model.localName().isEmpty() ? "（未命名配方）" : model.localName());
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(14);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        box.addView(title);
+
+        OreTextView meta = new OreTextView(context);
+        meta.setText(model.typeName() + "  ·  " + model.identifier
+                + "  ·  format_version " + model.formatVersion);
+        meta.setTextColor(Color.parseColor("#9A9A9A"));
+        meta.setTextSize(9);
+        meta.setPadding(0, UiUtils.dp(context, 2), 0, 0);
+        box.addView(meta);
+        return box;
+    }
+
+    private View errorBlock(String title, String detail) {
+        LinearLayout box = new LinearLayout(context);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = UiUtils.dp(context, 12);
+        box.setPadding(pad, pad, pad, pad);
+
+        OreTextView t = new OreTextView(context);
+        t.setText(title);
+        t.setTextColor(Color.WHITE);
+        t.setTextSize(13);
+        box.addView(t);
+
+        if (detail != null && !detail.isEmpty()) {
+            OreTextView d = new OreTextView(context);
+            d.setText(detail);
+            d.setTextColor(Color.parseColor("#B0B0B0"));
+            d.setTextSize(10);
+            d.setPadding(0, UiUtils.dp(context, 6), 0, 0);
+            box.addView(d);
+        }
+        return box;
+    }
+
+    private OreTextView sectionLabel(String text) {
+        OreTextView t = new OreTextView(context);
+        t.setText(text);
+        t.setTextColor(Color.parseColor("#8FD08F"));
+        t.setTextSize(11);
+        t.setPadding(0, 0, 0, UiUtils.dp(context, 4));
+        return t;
+    }
+
+    private void refreshIssues() {
+        if (issueContainer == null || model == null) return;
+        issueContainer.removeAllViews();
+        List<String> errs = model.validate();
+        if (errs.isEmpty()) return;
+        OreAlert alert = new OreAlert(context);
+        alert.setStyleSheet(StyleSheet.STYLE_ALERT_YELLOW);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < errs.size(); i++) {
+            if (i > 0) sb.append('\n');
+            sb.append("· ").append(errs.get(i));
+        }
+        alert.setText(sb.toString());
+        issueContainer.addView(alert);
+        UiUtils.addGap(context, issueContainer, UiUtils.dp(context, 6));
+    }
+
+    private void changed() {
+        if (model != null) model.pruneKey();
+        refreshIssues();
+        store.markDirty();
+    }
+
+    // ==================== 有序合成 ====================
+
+    private void buildShaped(LinearLayout parent) {
+        LinearLayout grid = new LinearLayout(context);
+        grid.setOrientation(LinearLayout.VERTICAL);
+
+        for (int r = 0; r < 3; r++) {
+            LinearLayout row = new LinearLayout(context);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            for (int c = 0; c < 3; c++) {
+                final int rr = r;
+                final int cc = c;
+                OreButton cell = new OreButton(context);
+                cell.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+                cell.setMaxLines(1);
+                cell.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                        0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+                int m = UiUtils.dp(context, 2);
+                lp.setMargins(m, m, m, m);
+                cell.setLayoutParams(lp);
+                cell.setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        onCellClick(rr, cc);
+                    }
+                });
+                cells[r][c] = cell;
+                row.addView(cell);
             }
+            grid.addView(row);
         }
-        currentRecipeType = recipeType;
-        if (body == null) {
-            OreTextView errText = new OreTextView(context);
-            errText.setText("不支持的配方类型");
-            errText.setTextColor(Color.WHITE);
-            layout.addView(errText);
-            scroll.addView(layout);
-            container.addView(scroll);
-            currentRecipeRoot = null;
-            return;
-        }
+        parent.addView(grid);
 
-        // 类型与名称
-        OreTextView typeLabel = new OreTextView(context);
-        String typeDisplay = recipeType.equals("recipe_shaped") ? "有序合成"
-                : recipeType.equals("recipe_shapeless") ? "无序合成"
-                : recipeType.equals("recipe_furnace") ? "熔炉"
-                : recipeType.equals("recipe_brewing_mix") ? "酿造" : "锻造";
-        typeLabel.setText("类型: " + typeDisplay);
-        typeLabel.setTextColor(Color.WHITE);
-        layout.addView(typeLabel);
+        keySummary = new LinearLayout(context);
+        keySummary.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        sp.topMargin = UiUtils.dp(context, 8);
+        keySummary.setLayoutParams(sp);
+        parent.addView(keySummary);
 
-        JSONObject description = body.optJSONObject("description");
-        String identifier = description == null ? "unknown" : description.optString("identifier", "unknown");
-        String localName = identifier.contains(":") ? identifier.split(":")[1] : identifier;
-        OreTextView nameText = new OreTextView(context);
-        nameText.setText("名称: " + localName);
-        nameText.setTextColor(Color.WHITE);
-        layout.addView(nameText);
+        renderGrid();
+    }
 
-        // 解锁方式解析
-        JSONObject unlockObj = body.optJSONObject("unlock");
-        JSONArray unlockArr = body.optJSONArray("unlock");
-        currentUnlockContext = "AlwaysUnlocked";
-        unlockItems.clear();
-        if (unlockObj != null) {
-            currentUnlockContext = unlockObj.optString("context", "AlwaysUnlocked");
-        } else if (unlockArr != null) {
-            currentUnlockContext = "PlayerHasManyItems";
-            for (int i = 0; i < unlockArr.length(); i++) {
-                JSONObject itemObj = unlockArr.optJSONObject(i);
-                if (itemObj != null) {
-                    String itemStr = itemObj.optString("item", "");
-                    int data = itemObj.optInt("data", -1);
-                    if (data >= 0) itemStr = itemStr + ":" + data;
-                    unlockItems.add(itemStr);
+    /** 把模型里的图案和映射刷到界面上。 */
+    private void renderGrid() {
+        if (model == null) return;
+        for (int r = 0; r < 3; r++) {
+            String rowStr = model.pattern[r];
+            for (int c = 0; c < 3; c++) {
+                OreButton cell = cells[r][c];
+                if (cell == null) continue;
+                char letter = c < rowStr.length() ? rowStr.charAt(c) : ' ';
+                if (letter == ' ') {
+                    cell.setText("空");
+                    cell.setStyleSheet(StyleSheet.STYLE_INACTIVATED);
+                } else {
+                    ItemRef item = model.key.get(letter);
+                    String name = item == null || item.isEmpty()
+                            ? "未指定" : ItemRegistry.nameOf(context, item.id);
+                    cell.setText(letter + " " + shorten(name, 6));
+                    cell.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
                 }
             }
-            if (unlockItems.isEmpty()) unlockItems.add("minecraft:apple");
+        }
+        renderKeySummary();
+    }
+
+    private void renderKeySummary() {
+        if (keySummary == null || model == null) return;
+        keySummary.removeAllViews();
+
+        List<Character> letters = model.usedLetters();
+        if (letters.isEmpty()) {
+            OreTextView hint = new OreTextView(context);
+            hint.setText("点上面的空格子放材料，字母会自动分配");
+            hint.setTextColor(Color.parseColor("#8A8A8A"));
+            hint.setTextSize(10);
+            keySummary.addView(hint);
+            return;
         }
 
-        // 适用方块 (tags)
-        JSONArray tags = body.optJSONArray("tags");
-        selectedTags.clear();
-        if (tags != null) {
-            for (int i = 0; i < tags.length(); i++) selectedTags.add(tags.optString(i));
-        }
-
-        LinearLayout tagGroup = new LinearLayout(context);
-        tagGroup.setOrientation(LinearLayout.HORIZONTAL);
-        String[] availableTags;
-        if (recipeType.equals("recipe_shaped")) {
-            availableTags = new String[]{"crafting_table"};
-        } else if (recipeType.equals("recipe_shapeless")) {
-            availableTags = new String[]{"crafting_table", "stonecutter", "cartography_table"};
-        } else if (recipeType.equals("recipe_furnace")) {
-            availableTags = new String[]{"furnace", "blast_furnace", "smoker", "campfire"};
-        } else if (recipeType.equals("recipe_brewing_mix")) {
-            availableTags = new String[]{"brewing_stand"};
-        } else {
-            availableTags = new String[]{"smithing_table"};
-        }
-
-        for (final String tag : availableTags) {
-            LinearLayout tagRow = new LinearLayout(context);
-            tagRow.setOrientation(LinearLayout.HORIZONTAL);
-            tagRow.setGravity(Gravity.CENTER_VERTICAL);
-            final OreSwitch sw = new OreSwitch(context);
-            sw.setChecked(selectedTags.contains(tag));
-            sw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-                @Override
-                public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                    if (isChecked) selectedTags.add(tag);
-                    else selectedTags.remove(tag);
-                    autoSave();
+        for (final Character letter : letters) {
+            final ItemRef item = model.key.get(letter);
+            OreTextView line = new OreTextView(context);
+            String name = item == null || item.isEmpty()
+                    ? "（未指定物品）" : ItemRegistry.nameOf(context, item.id);
+            String idText = item == null || item.isEmpty() ? "" : "  " + shortId(item);
+            line.setText(letter + "  →  " + name + idText);
+            line.setTextColor(item == null || item.isEmpty()
+                    ? Color.parseColor("#E0A030") : Color.parseColor("#CCCCCC"));
+            line.setTextSize(10);
+            line.setPadding(UiUtils.dp(context, 6), UiUtils.dp(context, 4),
+                    UiUtils.dp(context, 6), UiUtils.dp(context, 4));
+            line.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    showLetterMenu(letter);
                 }
             });
-            tagRow.addView(sw);
-            OreTextView tagLabel = new OreTextView(context);
-            tagLabel.setText(getTagDisplayName(tag));
-            tagLabel.setTextColor(Color.WHITE);
-            tagLabel.setTextSize(10);
-            tagLabel.setPadding(4, 0, 8, 0);
-            tagRow.addView(tagLabel);
-            tagGroup.addView(tagRow);
+            keySummary.addView(line);
         }
-        layout.addView(tagGroup);
+    }
 
-        // 无序合成输入物品
-        if (recipeType.equals("recipe_shapeless")) {
-            shapelessInputs.clear();
-            JSONArray ingredients = body.optJSONArray("ingredients");
-            if (ingredients != null) {
-                for (int i = 0; i < ingredients.length(); i++) {
-                    JSONObject ing = ingredients.optJSONObject(i);
-                    if (ing != null) {
-                        String itemStr = ing.optString("item", "");
-                        int data = ing.optInt("data", -1);
-                        if (data >= 0) itemStr += ":" + data;
-                        shapelessInputs.add(itemStr);
-                    }
-                }
-            }
-            if (shapelessInputs.isEmpty()) shapelessInputs.add("minecraft:apple");
-            OreTextView inputLabel = new OreTextView(context);
-            inputLabel.setText("输入物品");
-            inputLabel.setTextColor(Color.WHITE);
-            inputLabel.setTextSize(12);
-            layout.addView(inputLabel);
-            buildShapelessInputUI(layout);
-        }
-
-        // 有序合成 3×3 网格 + 映射
-        if (recipeType.equals("recipe_shaped")) {
-            recipeGrid = new GridLayout(context);
-            recipeGrid.setColumnCount(3);
-            recipeGrid.setRowCount(3);
-            final JSONObject key = body.optJSONObject("key");
-            final JSONArray pattern = body.optJSONArray("pattern");
-            for (int row = 0; row < 3; row++) {
-                String rowStr = "";
-                if (pattern != null && row < pattern.length()) rowStr = pattern.optString(row, "");
-                while (rowStr.length() < 3) rowStr += " ";
-                for (int col = 0; col < 3; col++) {
-                    char ch = rowStr.charAt(col);
-                    String letter = (ch == ' ') ? "" : String.valueOf(ch);
-                    final OreButton cell = new OreButton(context);
-                    cell.setText(letter);
-                    cell.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-                    cell.setOnClickListener(new View.OnClickListener() {
-                        @Override
-                        public void onClick(View v) {
-                            showLetterInputDialog(cell);
-                        }
-                    });
-                    recipeGrid.addView(cell, new GridLayout.LayoutParams(
-                            GridLayout.spec(row), GridLayout.spec(col)));
-                }
-            }
-            layout.addView(recipeGrid);
-            recipeMappingLayout = new LinearLayout(context);
-            recipeMappingLayout.setOrientation(LinearLayout.VERTICAL);
-            if (key != null) {
-                Iterator<String> it = key.keys();
-                while (it.hasNext()) {
-                    String letter = it.next();
-                    addMappingRow(recipeMappingLayout, letter, key.optJSONObject(letter));
-                }
-            }
-            layout.addView(recipeMappingLayout);
+    private void onCellClick(final int row, final int col) {
+        if (model == null) return;
+        char letter = model.pattern[row].charAt(col);
+        if (letter == ' ' || model.key.get(letter) == null) {
+            pickForCell(row, col);
         } else {
-            recipeGrid = null;
-            recipeMappingLayout = null;
+            showCellMenu(row, col);
         }
+    }
 
-        // 熔炉输入
-        if (recipeType.equals("recipe_furnace")) {
-            furnaceInputs.clear();
-            JSONObject inputObj = body.optJSONObject("input");
-            if (inputObj != null) {
-                String itemStr = inputObj.optString("item", "");
-                int data = inputObj.optInt("data", -1);
-                if (data >= 0) itemStr = itemStr + ":" + data;
-                furnaceInputs.add(itemStr);
-            }
-            if (furnaceInputs.isEmpty()) furnaceInputs.add("minecraft:apple");
-            OreTextView furnaceInputLabel = new OreTextView(context);
-            furnaceInputLabel.setText("熔炉输入");
-            furnaceInputLabel.setTextColor(Color.WHITE);
-            furnaceInputLabel.setTextSize(12);
-            layout.addView(furnaceInputLabel);
-            buildFurnaceInputUI(layout);
-        }
+    private void showCellMenu(final int row, final int col) {
+        char letter = model.pattern[row].charAt(col);
+        final ItemRef item = model.key.get(letter);
+        LinearLayout box = new LinearLayout(context);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(UiUtils.dp(context, 6), UiUtils.dp(context, 6),
+                UiUtils.dp(context, 6), UiUtils.dp(context, 6));
+        OreTextView info = new OreTextView(context);
+        info.setText(letter + " = " + (item == null ? "未指定" : item.asString()));
+        info.setTextColor(Color.WHITE);
+        info.setTextSize(11);
+        box.addView(info);
 
-        // 酿造配方：输入药水、试剂
-        if (recipeType.equals("recipe_brewing_mix")) {
-            OreTextView brewInputLabel = new OreTextView(context);
-            brewInputLabel.setText("输入药水");
-            brewInputLabel.setTextColor(Color.WHITE);
-            brewInputLabel.setTextSize(12);
-            layout.addView(brewInputLabel);
-
-            brewingInputItem = new OreEditText(context);
-            brewingInputItem.setHint("输入药水 (如 minecraft:potion:0)");
-            brewingInputItem.setText(body.optString("input", ""));
-            brewingInputItem.addTextChangedListener(autoSaveWatcher());
-            layout.addView(brewingInputItem);
-
-            OreTextView brewReagentLabel = new OreTextView(context);
-            brewReagentLabel.setText("试剂");
-            brewReagentLabel.setTextColor(Color.WHITE);
-            brewReagentLabel.setTextSize(12);
-            layout.addView(brewReagentLabel);
-
-            brewingReagentItem = new OreEditText(context);
-            brewingReagentItem.setHint("试剂 (如 minecraft:blaze_powder:0)");
-            brewingReagentItem.setText(body.optString("reagent", ""));
-            brewingReagentItem.addTextChangedListener(autoSaveWatcher());
-            layout.addView(brewingReagentItem);
-        }
-
-        // 锻造配方：模板、基底、添加物
-        if (recipeType.equals("recipe_smithing_transform")) {
-            OreAlert smithingWarning = new OreAlert(context);
-            smithingWarning.setText("由于不知名原因，锻造配方可能无法正常使用");
-            smithingWarning.setStyleSheet(StyleSheet.STYLE_ALERT_YELLOW);
-            layout.addView(smithingWarning);
-
-            OreTextView templateLabel = new OreTextView(context);
-            templateLabel.setText("锻造模板");
-            templateLabel.setTextColor(Color.WHITE);
-            templateLabel.setTextSize(12);
-            layout.addView(templateLabel);
-
-            smithingTemplateItem = new OreEditText(context);
-            smithingTemplateItem.setHint("模板 (如 minecraft:netherite_upgrade_smithing_template)");
-            smithingTemplateItem.setText(body.optString("template", ""));
-            smithingTemplateItem.addTextChangedListener(autoSaveWatcher());
-            layout.addView(smithingTemplateItem);
-
-            OreTextView baseLabel = new OreTextView(context);
-            baseLabel.setText("基底");
-            baseLabel.setTextColor(Color.WHITE);
-            baseLabel.setTextSize(12);
-            layout.addView(baseLabel);
-
-            smithingBaseItem = new OreEditText(context);
-            smithingBaseItem.setHint("基底 (如 minecraft:diamond_boots)");
-            smithingBaseItem.setText(body.optString("base", ""));
-            smithingBaseItem.addTextChangedListener(autoSaveWatcher());
-            layout.addView(smithingBaseItem);
-
-            OreTextView additionLabel = new OreTextView(context);
-            additionLabel.setText("添加物");
-            additionLabel.setTextColor(Color.WHITE);
-            additionLabel.setTextSize(12);
-            layout.addView(additionLabel);
-
-            smithingAdditionItem = new OreEditText(context);
-            smithingAdditionItem.setHint("添加物 (如 minecraft:netherite_ingot)");
-            smithingAdditionItem.setText(body.optString("addition", ""));
-            smithingAdditionItem.addTextChangedListener(autoSaveWatcher());
-            layout.addView(smithingAdditionItem);
-        }
-
-        // 产出物品
-        OreTextView resultLabel = new OreTextView(context);
-        resultLabel.setText("产出物品");
-        resultLabel.setTextColor(Color.WHITE);
-        resultLabel.setTextSize(12);
-        layout.addView(resultLabel);
-
-        LinearLayout resultLayout = new LinearLayout(context);
-        resultLayout.setOrientation(LinearLayout.HORIZONTAL);
-
-        visualResultItem = new OreEditText(context);
-        visualResultItem.setHint("产出物品ID");
-        visualResultCount = new OreEditText(context);
-        visualResultCount.setHint("数量");
-
-        TextWatcher resultWatcher = autoSaveWatcher();
-        visualResultItem.addTextChangedListener(resultWatcher);
-        visualResultCount.addTextChangedListener(resultWatcher);
-
-        if (recipeType.equals("recipe_shaped") || recipeType.equals("recipe_shapeless")
-                || recipeType.equals("recipe_furnace")) {
-            JSONObject resultObj = body.optJSONObject("result");
-            if (resultObj != null) {
-                visualResultItem.setText(resultObj.optString("item", ""));
-                visualResultCount.setText(String.valueOf(resultObj.optInt("count", 1)));
-            }
-            visualResultCount.setVisibility(View.VISIBLE);
-        } else if (recipeType.equals("recipe_brewing_mix")) {
-            visualResultItem.setText(body.optString("output", ""));
-            visualResultItem.setHint("输出药水 (如 minecraft:potion:31)");
-            visualResultCount.setVisibility(View.GONE);
-        } else if (recipeType.equals("recipe_smithing_transform")) {
-            visualResultItem.setText(body.optString("result", ""));
-            visualResultItem.setHint("产物 (如 minecraft:netherite_boots)");
-            visualResultCount.setVisibility(View.GONE);
-        }
-        resultLayout.addView(visualResultItem);
-        resultLayout.addView(visualResultCount);
-        layout.addView(resultLayout);
-
-        // 解锁方式选择
-        OreButton unlockSelectBtn = new OreButton(context);
-        unlockSelectBtn.setText(getUnlockDisplayName(currentUnlockContext));
-        unlockSelectBtn.setTag("unlock_select_btn");
-        unlockSelectBtn.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-        unlockSelectBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                showUnlockSelectDialog();
+        OreDialogBuilder b = new OreDialogBuilder(context);
+        b.setTitle("第 " + (row + 1) + " 行 第 " + (col + 1) + " 列");
+        b.setView(box);
+        b.addButton("更换物品", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+                pickForCell(row, col);
             }
         });
-        layout.addView(unlockSelectBtn);
-        if (currentUnlockContext.equals("PlayerHasManyItems")) {
-            buildUnlockItemsUI(layout);
+        b.addButton("清空这一格", StyleSheet.STYLE_RED, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+                clearCell(row, col);
+            }
+        });
+        b.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+            }
+        });
+        b.show();
+    }
+
+    private void pickForCell(final int row, final int col) {
+        char existing = model.pattern[row].charAt(col);
+        ItemRef current = existing == ' ' ? null : model.key.get(existing);
+        ItemPickerDialog.show(context, "第 " + (row + 1) + " 行 第 " + (col + 1) + " 列的物品",
+                current, new ItemPickerDialog.OnPick() {
+                    @Override public void onPick(ItemRef item) {
+                        char letter = model.pattern[row].charAt(col);
+                        if (letter == ' ') {
+                            letter = model.nextFreeLetter();
+                            model.pattern[row] = replaceChar(model.pattern[row], col, letter);
+                        }
+                        model.key.put(letter, item);
+                        renderGrid();
+                        changed();
+                    }
+                });
+    }
+
+    private void clearCell(int row, int col) {
+        char letter = model.pattern[row].charAt(col);
+        model.pattern[row] = replaceChar(model.pattern[row], col, ' ');
+        if (letter != ' ' && !patternUsesAnywhere(letter)) {
+            model.key.remove(letter);
         }
-
-        scroll.addView(layout);
-        container.addView(scroll);
+        renderGrid();
+        changed();
     }
 
-    // ==================== 通用 ====================
+    private void showLetterMenu(final Character letter) {
+        final ItemRef item = model.key.get(letter);
+        LinearLayout box = new LinearLayout(context);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(UiUtils.dp(context, 6), UiUtils.dp(context, 6),
+                UiUtils.dp(context, 6), UiUtils.dp(context, 6));
+        OreTextView info = new OreTextView(context);
+        info.setText(letter + " = " + (item == null ? "未指定" : item.asString()));
+        info.setTextColor(Color.WHITE);
+        info.setTextSize(11);
+        box.addView(info);
 
-    private TextWatcher autoSaveWatcher() {
-        return new TextWatcher() {
-            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+        OreDialogBuilder b = new OreDialogBuilder(context);
+        b.setTitle("材料 " + letter);
+        b.setView(box);
+        b.addButton("更换物品", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+                ItemPickerDialog.show(context, "选择 " + letter + " 的物品", item,
+                        new ItemPickerDialog.OnPick() {
+                            @Override public void onPick(ItemRef picked) {
+                                model.key.put(letter, picked);
+                                renderGrid();
+                                changed();
+                            }
+                        });
+            }
+        });
+        b.addButton("改附加值", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+                showDataEditor(item, new ItemSetter() {
+                    @Override public void set(ItemRef updated) {
+                        model.key.put(letter, updated);
+                        renderGrid();
+                        changed();
+                    }
+                });
+            }
+        });
+        b.addButton("清空该材料的所有格子", StyleSheet.STYLE_RED, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+                for (int r = 0; r < 3; r++) {
+                    String row = model.pattern[r];
+                    StringBuilder sb = new StringBuilder(row);
+                    for (int c = 0; c < sb.length(); c++) {
+                        if (sb.charAt(c) == letter) sb.setCharAt(c, ' ');
+                    }
+                    model.pattern[r] = sb.toString();
+                }
+                model.key.remove(letter);
+                renderGrid();
+                changed();
+            }
+        });
+        b.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+            }
+        });
+        b.show();
+    }
 
-            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+    private boolean patternUsesAnywhere(char letter) {
+        for (String row : model.pattern) {
+            if (row.indexOf(letter) >= 0) return true;
+        }
+        return false;
+    }
 
+    private static String replaceChar(String s, int index, char c) {
+        StringBuilder sb = new StringBuilder(s);
+        while (sb.length() <= index) sb.append(' ');
+        sb.setCharAt(index, c);
+        return sb.toString();
+    }
+
+    // ==================== 其他四种类型 ====================
+
+    private void buildShapeless(LinearLayout parent) {
+        listContainer = new LinearLayout(context);
+        listContainer.setOrientation(LinearLayout.VERTICAL);
+        parent.addView(listContainer);
+        renderShapeless();
+
+        OreButton add = new OreButton(context);
+        add.setText("+ 添加原料");
+        add.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+        add.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        add.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                ItemPickerDialog.show(context, "添加原料", null, new ItemPickerDialog.OnPick() {
+                    @Override public void onPick(ItemRef item) {
+                        model.ingredients.add(item);
+                        renderShapeless();
+                        changed();
+                    }
+                });
+            }
+        });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = UiUtils.dp(context, 6);
+        add.setLayoutParams(lp);
+        parent.addView(add);
+    }
+
+    private void renderShapeless() {
+        if (listContainer == null) return;
+        listContainer.removeAllViews();
+        if (model.ingredients.isEmpty()) {
+            listContainer.addView(hintText("还没有原料"));
+            return;
+        }
+        for (int i = 0; i < model.ingredients.size(); i++) {
+            final int index = i;
+            ItemRef r = model.ingredients.get(i);
+            listContainer.addView(itemRow(i + 1, r, new ItemSetter() {
+                @Override public void set(ItemRef item) {
+                    model.ingredients.set(index, item);
+                    renderShapeless();
+                    changed();
+                }
+            }, new Runnable() {
+                @Override public void run() {
+                    model.ingredients.remove(index);
+                    renderShapeless();
+                    changed();
+                }
+            }));
+        }
+    }
+
+    private void buildFurnace(LinearLayout parent) {
+        parent.addView(itemPickerRow("输入物品", model.furnaceInput, new ItemSetter() {
+            @Override public void set(ItemRef item) {
+                model.furnaceInput = item;
+                changed();
+            }
+        }));
+        parent.addView(itemPickerRow("输出物品", model.furnaceOutput, new ItemSetter() {
+            @Override public void set(ItemRef item) {
+                model.furnaceOutput = item;
+                changed();
+            }
+        }));
+    }
+
+    private void buildBrewing(LinearLayout parent) {
+        parent.addView(itemPickerRow("输入药水", model.brewInput, new ItemSetter() {
+            @Override public void set(ItemRef item) {
+                model.brewInput = item;
+                changed();
+            }
+        }));
+        parent.addView(itemPickerRow("试剂", model.brewReagent, new ItemSetter() {
+            @Override public void set(ItemRef item) {
+                model.brewReagent = item;
+                changed();
+            }
+        }));
+        parent.addView(itemPickerRow("产物", model.brewOutput, new ItemSetter() {
+            @Override public void set(ItemRef item) {
+                model.brewOutput = item;
+                changed();
+            }
+        }));
+    }
+
+    private void buildSmithing(LinearLayout parent) {
+        parent.addView(itemPickerRow("锻造模板", model.smithTemplate, new ItemSetter() {
+            @Override public void set(ItemRef item) {
+                model.smithTemplate = item;
+                changed();
+            }
+        }));
+        parent.addView(itemPickerRow("基底", model.smithBase, new ItemSetter() {
+            @Override public void set(ItemRef item) {
+                model.smithBase = item;
+                changed();
+            }
+        }));
+        parent.addView(itemPickerRow("添加物", model.smithAddition, new ItemSetter() {
+            @Override public void set(ItemRef item) {
+                model.smithAddition = item;
+                changed();
+            }
+        }));
+        parent.addView(itemPickerRow("产物", model.smithResult, new ItemSetter() {
+            @Override public void set(ItemRef item) {
+                model.smithResult = item;
+                changed();
+            }
+        }));
+    }
+
+    // ==================== 通用行控件 ====================
+
+    /** 物品赋值回调（不用 java.util.function，minSdk 23 上没有）。 */
+    private interface ItemSetter {
+        void set(ItemRef item);
+    }
+
+    /** 一行「标签 + 物品按钮」：点按钮选物品，长按改附加值。 */
+    private View itemPickerRow(String label, final ItemRef current, final ItemSetter setter) {
+        LinearLayout row = new LinearLayout(context);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, UiUtils.dp(context, 3), 0, UiUtils.dp(context, 3));
+
+        OreTextView lab = new OreTextView(context);
+        lab.setText(label);
+        lab.setTextColor(Color.parseColor("#BBBBBB"));
+        lab.setTextSize(10);
+        lab.setLayoutParams(new LinearLayout.LayoutParams(
+                UiUtils.dp(context, 72), LinearLayout.LayoutParams.WRAP_CONTENT));
+        row.addView(lab);
+
+        final OreButton btn = new OreButton(context);
+        btn.setMaxLines(1);
+        btn.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        btn.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        bindItem(btn, current);
+        btn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                ItemPickerDialog.show(context, "选择" + label, currentOfButton(btn),
+                        new ItemPickerDialog.OnPick() {
+                            @Override public void onPick(ItemRef item) {
+                                bindItem(btn, item);
+                                setter.set(item);
+                            }
+                        });
+            }
+        });
+        btn.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override public boolean onLongClick(View v) {
+                showDataEditor(currentOfButton(btn), new ItemSetter() {
+                    @Override public void set(ItemRef updated) {
+                        if (updated == null) return;
+                        bindItem(btn, updated);
+                        setter.set(updated);
+                    }
+                });
+                return true;
+            }
+        });
+        row.addView(btn);
+        return row;
+    }
+
+    private View itemRow(int index, ItemRef item, final ItemSetter setter, final Runnable onDelete) {
+        LinearLayout row = new LinearLayout(context);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, UiUtils.dp(context, 3), 0, UiUtils.dp(context, 3));
+
+        OreTextView idx = new OreTextView(context);
+        idx.setText(String.valueOf(index));
+        idx.setTextColor(Color.parseColor("#8A8A8A"));
+        idx.setTextSize(10);
+        idx.setLayoutParams(new LinearLayout.LayoutParams(
+                UiUtils.dp(context, 22), LinearLayout.LayoutParams.WRAP_CONTENT));
+        row.addView(idx);
+
+        final OreButton btn = new OreButton(context);
+        btn.setMaxLines(1);
+        btn.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        btn.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        bindItem(btn, item);
+        btn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                ItemPickerDialog.show(context, "选择原料", currentOfButton(btn),
+                        new ItemPickerDialog.OnPick() {
+                            @Override public void onPick(ItemRef picked) {
+                                bindItem(btn, picked);
+                                setter.set(picked);
+                            }
+                        });
+            }
+        });
+        btn.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override public boolean onLongClick(View v) {
+                showDataEditor(currentOfButton(btn), new ItemSetter() {
+                    @Override public void set(ItemRef updated) {
+                        if (updated == null) return;
+                        bindItem(btn, updated);
+                        setter.set(updated);
+                    }
+                });
+                return true;
+            }
+        });
+        row.addView(btn);
+
+        OreButton del = new OreButton(context);
+        del.setText("×");
+        del.setStyleSheet(StyleSheet.STYLE_RED);
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
+                UiUtils.dp(context, 48), LinearLayout.LayoutParams.WRAP_CONTENT);
+        dlp.leftMargin = UiUtils.dp(context, 4);
+        del.setLayoutParams(dlp);
+        del.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                onDelete.run();
+            }
+        });
+        row.addView(del);
+        return row;
+    }
+
+    /** 把物品写进按钮：文字和样式一起，并把引用挂到 tag 上供后续读取。 */
+    private void bindItem(OreButton btn, ItemRef item) {
+        btn.setTag(item);
+        if (item == null || item.isEmpty()) {
+            btn.setText("未设置  点我选择");
+            btn.setStyleSheet(StyleSheet.STYLE_INACTIVATED);
+            return;
+        }
+        String name = ItemRegistry.nameOf(context, item.id);
+        StringBuilder sb = new StringBuilder(name);
+        if (!name.equals(item.id)) sb.append("  ").append(shortId(item));
+        if (item.hasData()) sb.append("  data=").append(item.data);
+        btn.setText(sb.toString());
+        btn.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+    }
+
+    private ItemRef currentOfButton(OreButton btn) {
+        Object tag = btn.getTag();
+        if (tag == null) return null;
+        if (tag instanceof ItemRef) return (ItemRef) tag;
+        if (tag instanceof String) return ItemRef.parse((String) tag);
+        return null;
+    }
+
+    private OreTextView hintText(String text) {
+        OreTextView t = new OreTextView(context);
+        t.setText(text);
+        t.setTextColor(Color.parseColor("#8A8A8A"));
+        t.setTextSize(10);
+        t.setPadding(UiUtils.dp(context, 4), UiUtils.dp(context, 4), 0, UiUtils.dp(context, 4));
+        return t;
+    }
+
+    // ==================== 产出 ====================
+
+    private View buildResultRow() {
+        LinearLayout row = new LinearLayout(context);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+
+        final OreButton btn = new OreButton(context);
+        btn.setMaxLines(1);
+        btn.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        btn.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        bindItem(btn, model.result);
+        btn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                ItemPickerDialog.show(context, "选择产出物品", model.result,
+                        new ItemPickerDialog.OnPick() {
+                            @Override public void onPick(ItemRef item) {
+                                model.result = item;
+                                bindItem(btn, item);
+                                changed();
+                            }
+                        });
+            }
+        });
+        btn.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override public boolean onLongClick(View v) {
+                showDataEditor(model.result, new ItemSetter() {
+                    @Override public void set(ItemRef updated) {
+                        model.result = updated;
+                        bindItem(btn, updated);
+                        changed();
+                    }
+                });
+                return true;
+            }
+        });
+        row.addView(btn);
+
+        final OreEditText count = new OreEditText(context);
+        count.setHint("数量");
+        count.setSingleLine(true);
+        count.setInputType(InputType.TYPE_CLASS_NUMBER);
+        count.setText(String.valueOf(model.resultCount));
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+                UiUtils.dp(context, 72), LinearLayout.LayoutParams.WRAP_CONTENT);
+        clp.leftMargin = UiUtils.dp(context, 6);
+        count.setLayoutParams(clp);
+        count.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
             @Override public void afterTextChanged(Editable s) {
-                autoSave();
-            }
-        };
-    }
-
-    private String getTagDisplayName(String tag) {
-        if (tag == null) return "";
-        if (tag.equals("crafting_table")) return "工作台";
-        if (tag.equals("stonecutter")) return "切石机";
-        if (tag.equals("cartography_table")) return "制图台";
-        if (tag.equals("furnace")) return "熔炉";
-        if (tag.equals("blast_furnace")) return "高炉";
-        if (tag.equals("smoker")) return "烟熏炉";
-        if (tag.equals("campfire")) return "营火";
-        if (tag.equals("brewing_stand")) return "酿造台";
-        if (tag.equals("smithing_table")) return "锻造台";
-        return tag;
-    }
-
-    private String getUnlockDisplayName(String context) {
-        if (context == null) return "默认解锁";
-        if (context.equals("AlwaysUnlocked")) return "默认解锁";
-        if (context.equals("PlayerHasManyItems")) return "获得特定物品时解锁";
-        if (context.equals("PlayerInWater")) return "玩家在水中时解锁";
-        return context;
-    }
-
-    // ==================== 数据更新与保存 ====================
-
-    private void autoSave() {
-        if (currentRecipeFile == null || currentRecipeRoot == null) return;
-        updateRecipeFromGrid();
-        saveRecipeToFile(currentRecipeFile, currentRecipeRoot);
-    }
-
-    private void updateRecipeFromGrid() {
-        if (currentRecipeRoot == null || currentRecipeType == null) return;
-        try {
-            JSONObject body;
-            if (!currentRecipeRoot.has("minecraft:" + currentRecipeType)) return;
-            body = currentRecipeRoot.getJSONObject("minecraft:" + currentRecipeType);
-
-            // 有序合成：pattern + key
-            if (currentRecipeType.equals("recipe_shaped")) {
-                JSONArray pattern = new JSONArray();
-                if (recipeGrid != null) {
-                    for (int row = 0; row < 3; row++) {
-                        StringBuilder rowLetters = new StringBuilder();
-                        for (int col = 0; col < 3; col++) {
-                            OreButton cell = (OreButton) recipeGrid.getChildAt(row * 3 + col);
-                            String letter = (cell != null) ? cell.getText().toString().trim() : "";
-                            rowLetters.append(letter.isEmpty() ? " " : letter);
-                        }
-                        String line = rowLetters.toString();
-                        if (!line.equals("   ")) pattern.put(line);
-                    }
-                }
-                body.put("pattern", pattern);
-
-                JSONObject key = new JSONObject();
-                if (recipeMappingLayout != null) {
-                    for (int i = 0; i < recipeMappingLayout.getChildCount(); i++) {
-                        View child = recipeMappingLayout.getChildAt(i);
-                        if (child instanceof LinearLayout) {
-                            LinearLayout row = (LinearLayout) child;
-                            if (row.getChildCount() < 2) continue;
-                            OreEditText letEdit = (OreEditText) row.getChildAt(0);
-                            OreEditText itmEdit = (OreEditText) row.getChildAt(1);
-                            if (letEdit != null && itmEdit != null) {
-                                String l = letEdit.getText().toString().trim();
-                                String it = itmEdit.getText().toString().trim();
-                                if (!l.isEmpty() && !it.isEmpty()) {
-                                    JSONObject itemObj = new JSONObject();
-                                    itemObj.put("item", it);
-                                    key.put(l, itemObj);
-                                }
-                            }
-                        }
-                    }
-                }
-                body.put("key", key);
-            }
-
-            // 无序合成：ingredients
-            if (currentRecipeType.equals("recipe_shapeless")) {
-                JSONArray ingredientsArray = new JSONArray();
-                if (shapelessInputs != null) {
-                    for (String itemStr : shapelessInputs) {
-                        if (!itemStr.trim().isEmpty()) {
-                            JSONObject itemObj = new JSONObject();
-                            String itemId = itemStr.trim();
-                            int data = -1;
-                            int colonIndex = itemId.lastIndexOf(':');
-                            if (colonIndex > 0) {
-                                String afterColon = itemId.substring(colonIndex + 1);
-                                try {
-                                    data = Integer.parseInt(afterColon);
-                                    itemId = itemId.substring(0, colonIndex);
-                                } catch (NumberFormatException ignored) {
-                                }
-                            }
-                            itemObj.put("item", itemId);
-                            if (data >= 0) itemObj.put("data", data);
-                            ingredientsArray.put(itemObj);
-                        }
-                    }
-                }
-                body.put("ingredients", ingredientsArray);
-            }
-
-            // 熔炉输入
-            if (currentRecipeType.equals("recipe_furnace")) {
-                if (furnaceInputs != null && !furnaceInputs.isEmpty()) {
-                    String itemStr = furnaceInputs.get(0).trim();
-                    if (!itemStr.isEmpty()) {
-                        JSONObject input = new JSONObject();
-                        String itemId = itemStr;
-                        int data = -1;
-                        int colonIndex = itemId.lastIndexOf(':');
-                        if (colonIndex > 0) {
-                            String afterColon = itemId.substring(colonIndex + 1);
-                            try {
-                                data = Integer.parseInt(afterColon);
-                                itemId = itemId.substring(0, colonIndex);
-                            } catch (NumberFormatException ignored) {
-                            }
-                        }
-                        input.put("item", itemId);
-                        if (data >= 0) input.put("data", data);
-                        body.put("input", input);
-                    } else {
-                        body.remove("input");
-                    }
-                } else {
-                    body.remove("input");
-                }
-            }
-
-            // tags
-            JSONArray tagsArray = new JSONArray();
-            if (selectedTags != null) for (String tag : selectedTags) tagsArray.put(tag);
-            body.put("tags", tagsArray);
-
-            // 产出 + 酿造/锻造特有字段
-            if (currentRecipeType.equals("recipe_brewing_mix")) {
-                if (brewingInputItem != null) {
-                    String inputVal = brewingInputItem.getText().toString().trim();
-                    if (!inputVal.isEmpty()) body.put("input", inputVal);
-                    else body.remove("input");
-                }
-                if (brewingReagentItem != null) {
-                    String reagentVal = brewingReagentItem.getText().toString().trim();
-                    if (!reagentVal.isEmpty()) body.put("reagent", reagentVal);
-                    else body.remove("reagent");
-                }
-                if (visualResultItem != null) {
-                    String outVal = visualResultItem.getText().toString().trim();
-                    if (!outVal.isEmpty()) body.put("output", outVal);
-                    else body.remove("output");
-                }
-            } else if (currentRecipeType.equals("recipe_smithing_transform")) {
-                if (visualResultItem != null) {
-                    String resultVal = visualResultItem.getText().toString().trim();
-                    if (!resultVal.isEmpty()) body.put("result", resultVal);
-                    else body.remove("result");
-                }
-                if (smithingTemplateItem != null) {
-                    String val = smithingTemplateItem.getText().toString().trim();
-                    if (!val.isEmpty()) body.put("template", val);
-                    else body.remove("template");
-                }
-                if (smithingBaseItem != null) {
-                    String val = smithingBaseItem.getText().toString().trim();
-                    if (!val.isEmpty()) body.put("base", val);
-                    else body.remove("base");
-                }
-                if (smithingAdditionItem != null) {
-                    String val = smithingAdditionItem.getText().toString().trim();
-                    if (!val.isEmpty()) body.put("addition", val);
-                    else body.remove("addition");
-                }
-            } else if (visualResultItem != null && visualResultCount != null) {
-                String item = visualResultItem.getText().toString().trim();
-                String countStr = visualResultCount.getText().toString().trim();
-                int count = 1;
+                String t = s.toString().trim();
+                if (t.isEmpty()) return;
                 try {
-                    count = Integer.parseInt(countStr);
+                    int n = Integer.parseInt(t);
+                    if (n > 0 && n != model.resultCount) {
+                        model.resultCount = n;
+                        changed();
+                    }
                 } catch (NumberFormatException ignored) {
                 }
-                if (currentRecipeType.equals("recipe_shaped") || currentRecipeType.equals("recipe_shapeless")
-                        || currentRecipeType.equals("recipe_furnace")) {
-                    JSONObject result = new JSONObject();
-                    result.put("item", item);
-                    result.put("count", count);
-                    body.put("result", result);
-                }
-            }
-
-            // 解锁
-            if (currentUnlockContext != null && !currentUnlockContext.isEmpty()) {
-                if (currentUnlockContext.equals("PlayerHasManyItems")) {
-                    JSONArray unlockArray = new JSONArray();
-                    if (unlockItems != null) {
-                        for (String itemStr : unlockItems) {
-                            if (!itemStr.trim().isEmpty()) {
-                                JSONObject itemObj = new JSONObject();
-                                String itemId = itemStr.trim();
-                                int data = -1;
-                                int colonIndex = itemId.lastIndexOf(':');
-                                if (colonIndex > 0) {
-                                    String afterColon = itemId.substring(colonIndex + 1);
-                                    try {
-                                        data = Integer.parseInt(afterColon);
-                                        itemId = itemId.substring(0, colonIndex);
-                                    } catch (NumberFormatException ignored) {
-                                    }
-                                }
-                                itemObj.put("item", itemId);
-                                if (data >= 0) itemObj.put("data", data);
-                                unlockArray.put(itemObj);
-                            }
-                        }
-                    }
-                    body.put("unlock", unlockArray);
-                } else {
-                    JSONObject unlock = new JSONObject();
-                    unlock.put("context", currentUnlockContext);
-                    body.put("unlock", unlock);
-                }
-            } else {
-                body.remove("unlock");
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
-
-    private void saveRecipeToFile(File file, JSONObject recipeJson) {
-        try {
-            FileUtils.writeText(file, recipeJson.toString(2));
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
-
-    private void addMappingRow(LinearLayout mappingLayout, String letter, JSONObject itemObj) {
-        final LinearLayout row = new LinearLayout(context);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(0, 4, 0, 4);
-
-        final OreEditText letterEdit = new OreEditText(context);
-        letterEdit.setHint("字母");
-        if (letter != null) letterEdit.setText(letter);
-        letterEdit.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        row.addView(letterEdit);
-
-        final OreEditText itemEdit = new OreEditText(context);
-        itemEdit.setHint("物品ID");
-        if (itemObj != null) itemEdit.setText(itemObj.optString("item", ""));
-        itemEdit.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 2f));
-        row.addView(itemEdit);
-
-        OreButton deleteBtn = new OreButton(context);
-        deleteBtn.setText("×");
-        deleteBtn.setStyleSheet(StyleSheet.STYLE_RED);
-        deleteBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                View parent = (View) row.getParent();
-                if (parent instanceof LinearLayout) {
-                    ((LinearLayout) parent).removeView(row);
-                }
-                autoSave();
             }
         });
-        row.addView(deleteBtn);
-
-        TextWatcher tw = autoSaveWatcher();
-        letterEdit.addTextChangedListener(tw);
-        itemEdit.addTextChangedListener(tw);
-
-        mappingLayout.addView(row);
+        row.addView(count);
+        return row;
     }
 
-    /** 确保映射行存在（网格字母输入时自动补一行）。 */
-    private void ensureMappingExists(String letter) {
-        if (recipeMappingLayout == null || letter == null || letter.trim().isEmpty()) return;
-        for (int i = 0; i < recipeMappingLayout.getChildCount(); i++) {
-            View child = recipeMappingLayout.getChildAt(i);
-            if (child instanceof LinearLayout) {
-                LinearLayout row = (LinearLayout) child;
-                if (row.getChildCount() > 0) {
-                    OreEditText letterEdit = (OreEditText) row.getChildAt(0);
-                    if (letterEdit != null && letter.equals(letterEdit.getText().toString().trim())) {
+    // ==================== 适用方块 ====================
+
+    private View buildTagRow() {
+        LinearLayout box = new LinearLayout(context);
+        box.setOrientation(LinearLayout.VERTICAL);
+
+        String[] available;
+        switch (model.type) {
+            case RecipeModel.SHAPED: available = CRAFTING_TAGS; break;
+            case RecipeModel.SHAPELESS: available = SHAPELESS_TAGS; break;
+            case RecipeModel.FURNACE: available = FURNACE_TAGS; break;
+            case RecipeModel.BREWING: available = BREWING_TAGS; break;
+            default: available = SMITHING_TAGS; break;
+        }
+
+        for (final String tag : available) {
+            LinearLayout row = new LinearLayout(context);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+
+            final OreSwitch sw = new OreSwitch(context);
+            sw.setChecked(model.tags.contains(tag));
+            sw.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+                @Override public void onCheckedChanged(android.widget.CompoundButton b, boolean checked) {
+                    if (checked) {
+                        if (!model.tags.contains(tag)) model.tags.add(tag);
+                    } else {
+                        model.tags.remove(tag);
+                    }
+                    changed();
+                }
+            });
+            row.addView(sw);
+
+            OreTextView lab = new OreTextView(context);
+            lab.setText(tagDisplay(tag));
+            lab.setTextColor(Color.parseColor("#CCCCCC"));
+            lab.setTextSize(10);
+            lab.setPadding(UiUtils.dp(context, 6), 0, 0, 0);
+            row.addView(lab);
+
+            box.addView(row);
+        }
+
+        if (model.tags.isEmpty()) {
+            box.addView(hintText("没有勾选任何方块，这条配方不会在任何地方出现"));
+        }
+        return box;
+    }
+
+    private static String tagDisplay(String tag) {
+        switch (tag) {
+            case "crafting_table": return "工作台";
+            case "stonecutter": return "切石机";
+            case "cartography_table": return "制图台";
+            case "furnace": return "熔炉";
+            case "blast_furnace": return "高炉";
+            case "smoker": return "烟熏炉";
+            case "campfire": return "营火";
+            case "brewing_stand": return "酿造台";
+            case "smithing_table": return "锻造台";
+            default: return tag;
+        }
+    }
+
+    // ==================== 解锁方式 ====================
+
+    private View buildUnlockBlock() {
+        LinearLayout box = new LinearLayout(context);
+        box.setOrientation(LinearLayout.VERTICAL);
+
+        OreTextView btn = new OreTextView(context);
+        btn.setText(unlockLabel(model.unlockMode));
+        btn.setTextColor(Color.WHITE);
+        btn.setTextSize(11);
+        btn.setPadding(UiUtils.dp(context, 8), UiUtils.dp(context, 8),
+                UiUtils.dp(context, 8), UiUtils.dp(context, 8));
+        btn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                showUnlockMenu();
+            }
+        });
+        box.addView(btn);
+
+        if (model.unlockMode == RecipeModel.UNLOCK_ITEMS) {
+            for (int i = 0; i < model.unlockItems.size(); i++) {
+                final int index = i;
+                box.addView(itemRow(i + 1, model.unlockItems.get(i), new ItemSetter() {
+                    @Override public void set(ItemRef item) {
+                        model.unlockItems.set(index, item);
+                        changed();
+                    }
+                }, new Runnable() {
+                    @Override public void run() {
+                        model.unlockItems.remove(index);
+                        rebuildVisualKeepScroll();
+                        changed();
+                    }
+                }));
+            }
+            OreButton add = new OreButton(context);
+            add.setText("+ 添加解锁物品");
+            add.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+            add.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    ItemPickerDialog.show(context, "添加解锁物品", null, new ItemPickerDialog.OnPick() {
+                        @Override public void onPick(ItemRef item) {
+                            model.unlockItems.add(item);
+                            rebuildVisualKeepScroll();
+                            changed();
+                        }
+                    });
+                }
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            lp.topMargin = UiUtils.dp(context, 4);
+            add.setLayoutParams(lp);
+            box.addView(add);
+            box.addView(hintText("玩家获得上面任意一件物品后，这条配方才会出现在配方书里"));
+        }
+        return box;
+    }
+
+    private void showUnlockMenu() {
+        LinearLayout box = new LinearLayout(context);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(UiUtils.dp(context, 6), UiUtils.dp(context, 6),
+                UiUtils.dp(context, 6), UiUtils.dp(context, 6));
+
+        OreDialogBuilder b = new OreDialogBuilder(context);
+        b.setTitle("解锁方式");
+        b.setView(box);
+        b.addButton("默认解锁（始终可见）", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+                model.unlockMode = RecipeModel.UNLOCK_ALWAYS;
+                rebuildVisualKeepScroll();
+                changed();
+            }
+        });
+        b.addButton("获得特定物品时解锁", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+                model.unlockMode = RecipeModel.UNLOCK_ITEMS;
+                if (model.unlockItems.isEmpty()) model.unlockItems.add(new ItemRef("minecraft:apple"));
+                rebuildVisualKeepScroll();
+                changed();
+            }
+        });
+        b.addButton("玩家在水中时解锁", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+                model.unlockMode = RecipeModel.UNLOCK_WATER;
+                rebuildVisualKeepScroll();
+                changed();
+            }
+        });
+        b.addButton("不写解锁字段", StyleSheet.STYLE_DARK_GRAY, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+                model.unlockMode = RecipeModel.UNLOCK_NONE;
+                rebuildVisualKeepScroll();
+                changed();
+            }
+        });
+        b.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+            }
+        });
+        b.show();
+    }
+
+    private static String unlockLabel(int mode) {
+        switch (mode) {
+            case RecipeModel.UNLOCK_ITEMS: return "获得特定物品时解锁  （点击修改）";
+            case RecipeModel.UNLOCK_WATER: return "玩家在水中时解锁  （点击修改）";
+            case RecipeModel.UNLOCK_NONE: return "不写解锁字段  （点击修改）";
+            default: return "默认解锁（始终可见）  （点击修改）";
+        }
+    }
+
+    /** 结构变了要整体重建，但把滚动位置和模型带过去，不让用户以为自己跳页了。 */
+    private void rebuildVisualKeepScroll() {
+        if (contentArea == null) return;
+        int y = 0;
+        View child = contentArea.getChildAt(1);
+        if (child instanceof ScrollView) y = ((ScrollView) child).getScrollY();
+        showVisual();
+        View again = contentArea.getChildAt(1);
+        if (again instanceof ScrollView) ((ScrollView) again).scrollTo(0, y);
+    }
+
+    // ==================== 附加值 ====================
+
+    private void showDataEditor(final ItemRef item, final ItemSetter setter) {
+        if (item == null || item.isEmpty()) {
+            Toast.makeText(context, "先选一个物品再改附加值", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final OreEditText input = new OreEditText(context);
+        input.setHint("留空或 -1 表示不写 data");
+        input.setSingleLine(true);
+        input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_SIGNED);
+        input.setText(item.hasData() ? String.valueOf(item.data) : "");
+
+        LinearLayout box = new LinearLayout(context);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = UiUtils.dp(context, 8);
+        box.setPadding(pad, pad, pad, pad);
+
+        OreTextView info = new OreTextView(context);
+        info.setText(item.id + "\n只有羊毛、染色玻璃这类分变体的物品才需要填附加值");
+        info.setTextColor(Color.parseColor("#AAAAAA"));
+        info.setTextSize(9);
+        info.setPadding(0, 0, 0, UiUtils.dp(context, 6));
+        box.addView(info);
+        box.addView(input);
+
+        OreDialogBuilder b = new OreDialogBuilder(context);
+        b.setTitle("附加值");
+        b.setView(box);
+        b.setPositiveButton("确定", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                String t = input.getText().toString().trim();
+                ItemRef copy = item.copy();
+                if (t.isEmpty() || "-1".equals(t)) {
+                    copy.data = ItemRef.UNSET;
+                } else {
+                    try {
+                        copy.data = Integer.parseInt(t);
+                    } catch (NumberFormatException e) {
+                        Toast.makeText(context, "请输入整数", Toast.LENGTH_SHORT).show();
                         return;
                     }
                 }
-            }
-        }
-        addMappingRow(recipeMappingLayout, letter, null);
-    }
-
-    // ==================== 对话框 ====================
-
-    private void showLetterInputDialog(final OreButton cell) {
-        final OreEditText letterInput = new OreEditText(context);
-        letterInput.setHint("输入字母 (A-Z)");
-        letterInput.setText(cell.getText().toString());
-
-        OreDialogBuilder builder = new OreDialogBuilder(context);
-        builder.setTitle("输入字母");
-        builder.setView(letterInput);
-        builder.setPositiveButton("确定", new DialogInterface.OnClickListener() {
-            @Override
-            public void onClick(DialogInterface dialog, int which) {
-                String letter = letterInput.getText().toString().trim().toUpperCase();
-                if (letter.length() == 1 && letter.charAt(0) >= 'A' && letter.charAt(0) <= 'Z') {
-                    cell.setText(letter);
-                    ensureMappingExists(letter);
-                    autoSave();
-                } else if (letter.isEmpty()) {
-                    cell.setText("");
-                    autoSave();
-                } else {
-                    Toast.makeText(context, "请输入单个字母", Toast.LENGTH_SHORT).show();
-                }
-                dialog.dismiss();
+                d.dismiss();
+                setter.set(copy);
             }
         });
-        builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
-            @Override
-            public void onClick(DialogInterface dialog, int which) {
-                dialog.dismiss();
+        b.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
             }
         });
-        builder.show();
+        b.show();
     }
 
-    private void showUnlockSelectDialog() {
-        final String[] contexts = {"AlwaysUnlocked", "PlayerHasManyItems", "PlayerInWater"};
-        final String[] chineseNames = new String[contexts.length];
-        for (int i = 0; i < contexts.length; i++) {
-            chineseNames[i] = getUnlockDisplayName(contexts[i]);
-        }
+    // ==================== 删除 ====================
 
-        LinearLayout layout = new LinearLayout(context);
-        layout.setOrientation(LinearLayout.VERTICAL);
+    private void confirmDelete(final File recipeFile) {
+        LinearLayout box = new LinearLayout(context);
+        box.setOrientation(LinearLayout.VERTICAL);
         int pad = UiUtils.dp(context, 12);
-        layout.setPadding(pad, pad, pad, pad);
-
-        final OreDialogBuilder builder = new OreDialogBuilder(context);
-        builder.setTitle("选择解锁方式");
-        builder.setView(layout);
-        final android.app.Dialog[] dialogRef = new android.app.Dialog[1];
-
-        for (int i = 0; i < contexts.length; i++) {
-            final int index = i;
-            OreButton btn = new OreButton(context);
-            btn.setText(chineseNames[i]);
-            btn.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-            btn.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    String newContext = contexts[index];
-                    if (!newContext.equals(currentUnlockContext)) {
-                        if (newContext.equals("PlayerHasManyItems")) {
-                            unlockItems.clear();
-                            unlockItems.add("minecraft:apple");
-                        }
-                        currentUnlockContext = newContext;
-                        autoSave();
-
-                        View unlockBtn = recipeContentArea.findViewWithTag("unlock_select_btn");
-                        if (unlockBtn instanceof OreButton) {
-                            ((OreButton) unlockBtn).setText(getUnlockDisplayName(currentUnlockContext));
-                        }
-                        View oldItems = recipeContentArea.findViewWithTag("unlock_items_container");
-                        if (oldItems != null && recipeContentArea instanceof android.view.ViewGroup) {
-                            ((android.view.ViewGroup) recipeContentArea).removeView(oldItems);
-                        }
-                        if (currentUnlockContext.equals("PlayerHasManyItems")
-                                && recipeContentArea instanceof LinearLayout) {
-                            buildUnlockItemsUI((LinearLayout) recipeContentArea);
-                        }
-                    }
-                    if (dialogRef[0] != null) dialogRef[0].dismiss();
-                }
-            });
-            layout.addView(btn);
-            UiUtils.addGap(context, layout, 6);
-        }
-
-        builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
-            @Override
-            public void onClick(DialogInterface dialog, int which) {
-                dialog.dismiss();
-            }
-        });
-        dialogRef[0] = builder.show();
-    }
-
-    private void buildUnlockItemsUI(final LinearLayout parent) {
-        View oldContainer = parent.findViewWithTag("unlock_items_container");
-        if (oldContainer != null) {
-            parent.removeView(oldContainer);
-        }
-
-        LinearLayout container = new LinearLayout(context);
-        container.setOrientation(LinearLayout.VERTICAL);
-        container.setTag("unlock_items_container");
-
-        for (int i = 0; i < unlockItems.size(); i++) {
-            final int index = i;
-            String itemStr = unlockItems.get(i);
-
-            final OreEditText itemEdit = new OreEditText(context);
-            itemEdit.setHint("物品ID");
-            itemEdit.setText(itemStr);
-
-            OreButton delBtn = new OreButton(context);
-            delBtn.setText("×");
-            delBtn.setStyleSheet(StyleSheet.STYLE_RED);
-            delBtn.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    unlockItems.remove(index);
-                    autoSave();
-                    buildUnlockItemsUI(parent);
-                }
-            });
-
-            LinearLayout row = new LinearLayout(context);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            LinearLayout.LayoutParams itemParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-            itemEdit.setLayoutParams(itemParams);
-            row.addView(itemEdit);
-            row.addView(delBtn);
-            container.addView(row);
-            UiUtils.addGap(context, container, 4);
-
-            itemEdit.addTextChangedListener(new TextWatcher() {
-                @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
-
-                @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
-
-                @Override public void afterTextChanged(Editable s) {
-                    if (index < unlockItems.size()) {
-                        unlockItems.set(index, s.toString().trim());
-                    }
-                    autoSave();
-                }
-            });
-        }
-
-        OreButton addBtn = new OreButton(context);
-        addBtn.setText("+ 添加物品");
-        addBtn.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-        addBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                unlockItems.add("minecraft:apple");
-                autoSave();
-                buildUnlockItemsUI(parent);
-            }
-        });
-        container.addView(addBtn);
-
-        parent.addView(container);
-    }
-
-    private void buildShapelessInputUI(final LinearLayout parent) {
-        View oldContainer = parent.findViewWithTag("shapeless_inputs_container");
-        if (oldContainer != null) {
-            parent.removeView(oldContainer);
-        }
-
-        LinearLayout container = new LinearLayout(context);
-        container.setOrientation(LinearLayout.VERTICAL);
-        container.setTag("shapeless_inputs_container");
-
-        for (int i = 0; i < shapelessInputs.size(); i++) {
-            final int index = i;
-            String itemStr = shapelessInputs.get(i);
-
-            final OreEditText itemEdit = new OreEditText(context);
-            itemEdit.setHint("物品ID");
-            itemEdit.setText(itemStr);
-
-            OreButton delBtn = new OreButton(context);
-            delBtn.setText("×");
-            delBtn.setStyleSheet(StyleSheet.STYLE_RED);
-            delBtn.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    shapelessInputs.remove(index);
-                    autoSave();
-                    rebuildVisual();
-                }
-            });
-
-            LinearLayout row = new LinearLayout(context);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            LinearLayout.LayoutParams itemParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-            itemEdit.setLayoutParams(itemParams);
-            row.addView(itemEdit);
-            row.addView(delBtn);
-            container.addView(row);
-            UiUtils.addGap(context, container, 4);
-
-            itemEdit.addTextChangedListener(new TextWatcher() {
-                @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
-
-                @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
-
-                @Override public void afterTextChanged(Editable s) {
-                    if (index < shapelessInputs.size()) {
-                        shapelessInputs.set(index, s.toString().trim());
-                    }
-                    autoSave();
-                }
-            });
-        }
-
-        OreButton addBtn = new OreButton(context);
-        addBtn.setText("+ 添加物品");
-        addBtn.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-        addBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                shapelessInputs.add("minecraft:apple");
-                autoSave();
-                rebuildVisual();
-            }
-        });
-        container.addView(addBtn);
-
-        parent.addView(container);
-    }
-
-    private void buildFurnaceInputUI(final LinearLayout parent) {
-        View oldContainer = parent.findViewWithTag("furnace_input_container");
-        if (oldContainer != null) {
-            parent.removeView(oldContainer);
-        }
-
-        LinearLayout container = new LinearLayout(context);
-        container.setOrientation(LinearLayout.VERTICAL);
-        container.setTag("furnace_input_container");
-
-        for (int i = 0; i < furnaceInputs.size(); i++) {
-            final int index = i;
-            String itemStr = furnaceInputs.get(i);
-
-            final OreEditText itemEdit = new OreEditText(context);
-            itemEdit.setHint("物品ID");
-            itemEdit.setText(itemStr);
-
-            OreButton delBtn = new OreButton(context);
-            delBtn.setText("×");
-            delBtn.setStyleSheet(StyleSheet.STYLE_RED);
-            delBtn.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    furnaceInputs.remove(index);
-                    autoSave();
-                    rebuildVisual();
-                }
-            });
-
-            LinearLayout row = new LinearLayout(context);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            LinearLayout.LayoutParams itemParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-            itemEdit.setLayoutParams(itemParams);
-            row.addView(itemEdit);
-            row.addView(delBtn);
-            container.addView(row);
-            UiUtils.addGap(context, container, 4);
-
-            itemEdit.addTextChangedListener(new TextWatcher() {
-                @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
-
-                @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
-
-                @Override public void afterTextChanged(Editable s) {
-                    if (index < furnaceInputs.size()) {
-                        furnaceInputs.set(index, s.toString().trim());
-                    }
-                    autoSave();
-                }
-            });
-        }
-
-        OreButton addBtn = new OreButton(context);
-        addBtn.setText("+ 添加物品");
-        addBtn.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-        addBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                furnaceInputs.add("minecraft:apple");
-                autoSave();
-                rebuildVisual();
-            }
-        });
-        container.addView(addBtn);
-
-        parent.addView(container);
-    }
-
-    /** 重建整个可视化界面（删除/添加物品后调用）。 */
-    private void rebuildVisual() {
-        if (recipeContentArea != null && currentRecipeFile != null) {
-            recipeContentArea.removeAllViews();
-            showVisual(recipeContentArea, currentRecipeFile);
-        }
-    }
-
-    private void showDeleteRecipeConfirm(final File recipeFile) {
+        box.setPadding(pad, pad, pad, pad);
         OreTextView msg = new OreTextView(context);
-        msg.setText("确定要删除配方 \"" + recipeFile.getName() + "\" 吗？\n此操作不可恢复！");
+        msg.setText("确定删除配方 \"" + recipeFile.getName() + "\" 吗？\n此操作不可恢复。");
         msg.setTextColor(Color.WHITE);
-        msg.setTextSize(14);
+        msg.setTextSize(11);
+        box.addView(msg);
 
-        LinearLayout layout = new LinearLayout(context);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setGravity(Gravity.CENTER);
-        int pad = UiUtils.dp(context, 16);
-        layout.setPadding(pad, pad, pad, pad);
-        layout.addView(msg);
-
-        OreDialogBuilder builder = new OreDialogBuilder(context);
-        builder.setTitle("删除配方");
-        builder.setView(layout);
-        builder.setPositiveButton("删除", new DialogInterface.OnClickListener() {
-            @Override
-            public void onClick(DialogInterface dialog, int which) {
+        OreDialogBuilder b = new OreDialogBuilder(context);
+        b.setTitle("删除配方");
+        b.setView(box);
+        b.setPositiveButton("删除", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                store.discard();
+                File parent = recipeFile.getParentFile();
                 if (recipeFile.delete()) {
                     Toast.makeText(context, "配方已删除", Toast.LENGTH_SHORT).show();
                 } else {
                     Toast.makeText(context, "删除失败", Toast.LENGTH_SHORT).show();
                 }
-                host.refreshFileList(currentDirOf(recipeFile));
-                dialog.dismiss();
+                host.refreshFileList(parent);
+                d.dismiss();
             }
         });
-        builder.getPositiveButton().setStyleSheet(StyleSheet.STYLE_RED);
-        builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
-            @Override
-            public void onClick(DialogInterface dialog, int which) {
-                dialog.dismiss();
+        b.getPositiveButton().setStyleSheet(StyleSheet.STYLE_RED);
+        b.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
             }
         });
-        builder.show();
+        b.show();
     }
 
-    private File currentDirOf(File file) {
-        File parent = file.getParentFile();
-        return parent != null ? parent : file;
+    // ==================== 小工具 ====================
+
+    private static String shorten(String s, int max) {
+        if (s == null) return "";
+        return s.length() <= max ? s : s.substring(0, max) + "…";
+    }
+
+    private static String shortId(ItemRef item) {
+        if (item == null || item.id == null) return "";
+        String id = item.id;
+        return id.startsWith("minecraft:") ? id.substring(10) : id;
     }
 }
