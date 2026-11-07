@@ -196,6 +196,16 @@ public class RecipeEditor {
         store.flush();
     }
 
+    /**
+     * 右侧面板的宽度变了（切换浏览 / 聚焦 / 编辑）之后重画一次。
+     *
+     * 源码模式或还没打开文件时不用管，那种情况由调用方逐层重排就够了。
+     */
+    public void onModeChanged() {
+        if (sourceMode || model == null || currentFile == null) return;
+        rebuildVisualKeepScroll();
+    }
+
     // ==================== 可视化主体 ====================
 
     private void showVisual() {
@@ -813,8 +823,9 @@ public class RecipeEditor {
         androidx.appcompat.app.AlertDialog dialog = b.show();
         android.view.Window w = dialog.getWindow();
         if (w != null) {
+            // 宽度跟物品选择器一致，两个弹窗看起来是一套的
             android.util.DisplayMetrics dm = context.getResources().getDisplayMetrics();
-            w.setLayout((int) (Math.min(dm.widthPixels, dm.heightPixels) * 0.62f),
+            w.setLayout((int) (Math.min(dm.widthPixels, dm.heightPixels) * 0.88f),
                     android.view.WindowManager.LayoutParams.WRAP_CONTENT);
         }
     }

@@ -278,6 +278,18 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
         return btn;
     }
 
+    /** 逐层重排重绘：只在根上 requestLayout 不一定能传到已经测量过的子 View。 */
+    private void forceRelayout(View v) {
+        v.requestLayout();
+        v.invalidate();
+        if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                forceRelayout(g.getChildAt(i));
+            }
+        }
+    }
+
     private OreButton headerButton(String text, StyleSheet style, LinearLayout.LayoutParams params, View.OnClickListener listener) {
         OreButton btn = new OreButton(this);
         btn.setText(text);
@@ -299,8 +311,12 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
         LinearLayout.LayoutParams middleParams = (LinearLayout.LayoutParams) middlePanel.getLayoutParams();
         LinearLayout.LayoutParams rightParams = (LinearLayout.LayoutParams) rightPanel.getLayoutParams();
 
+        // 聚焦与编辑模式下左侧别的地方已经提供了这些入口，顶部折叠面板收起来，
+        // 免得同一个功能出现两遍（编辑模式的左栏就是「返回主界面 / 创建备份」）
         View funcAccordion = leftPanel.getChildAt(0);
-        if (funcAccordion != null) funcAccordion.setVisibility(mode == MODE_FOCUS ? View.GONE : View.VISIBLE);
+        if (funcAccordion != null) {
+            funcAccordion.setVisibility(mode == MODE_BROWSE ? View.VISIBLE : View.GONE);
+        }
 
         if (mode == MODE_FOCUS) {
             modeButtonContainer.setOrientation(LinearLayout.VERTICAL);
@@ -330,10 +346,16 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
 
         // 三个面板的宽窄、中间列表的排版都跟着模式变，必须当场重排一次，
         // 否则要等下一次点文件才看到新布局
-        leftPanel.requestLayout();
-        middlePanel.requestLayout();
-        rightPanel.requestLayout();
         if (currentDir != null) loadFileList(currentDir);
+        // 右侧编辑器宽度变了，里面的子 View 得逐层重新测量一遍，
+        // 只在父容器上 requestLayout 有时会被跳过，看起来就像右侧没刷新
+        rightPanel.post(new Runnable() {
+            @Override
+            public void run() {
+                forceRelayout(rightPanel);
+                if (recipeEditor != null) recipeEditor.onModeChanged();
+            }
+        });
     }
 
     private void buildBrowseLeft() {

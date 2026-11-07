@@ -50,11 +50,13 @@ public final class ItemPickerDialog {
 
     private static final int COLUMNS = 3;
     private static final int CELL_HEIGHT_DP = 94;
-    /** 每屏先画这么多行，滑到底再追加一批：一次画 60 个格子会明显卡一下。 */
-    private static final int PAGE_ROWS = 5;
-    /** 候选池上限，超出部分靠搜索缩小。 */
-    private static final int MAX_ROWS = 120;
+    /** 每屏先画这么多行，滑到底再追加一批：一次画全部会明显卡一下。 */
+    private static final int PAGE_ROWS = 4;
+    /** 候选总数不设上限，滚到底就把剩下的全放出来。 */
+    private static final int MAX_ROWS = 5000;
     private static final long SEARCH_DEBOUNCE_MS = 180;
+    /** 滚动停手多久才补下一批。滚动中加行会改内容高度，列表会跳一下。 */
+    private static final long LOAD_MORE_DELAY_MS = 120;
 
     private final Context context;
     private final OnPick onPick;
@@ -76,6 +78,13 @@ public final class ItemPickerDialog {
         @Override
         public void run() {
             rebuildResults();
+        }
+    };
+
+    private final Runnable loadMoreTask = new Runnable() {
+        @Override
+        public void run() {
+            appendPage();
         }
     };
 
@@ -140,15 +149,16 @@ public final class ItemPickerDialog {
         scroll.addView(gridContainer);
         content.addView(scroll);
 
-        // 滑到底自动续下一批
+        // 滑到底自动续下一批。滚动过程中每一帧都加行会让列表高度连续变化，
+        // 手感上就是「弹一下」，所以等停手之后再补。
         scroll.setOnScrollChangeListener(new View.OnScrollChangeListener() {
             @Override
             public void onScrollChange(View v, int x, int y, int oldX, int oldY) {
                 View child = scroll.getChildAt(0);
                 if (child == null) return;
-                if (y + scroll.getHeight() >= child.getHeight() - UiUtils.dp(context, 120)) {
-                    appendPage();
-                }
+                boolean nearBottom = y + scroll.getHeight() >= child.getHeight() - UiUtils.dp(context, 200);
+                main.removeCallbacks(loadMoreTask);
+                if (nearBottom) main.postDelayed(loadMoreTask, LOAD_MORE_DELAY_MS);
             }
         });
 
@@ -197,6 +207,7 @@ public final class ItemPickerDialog {
     private void rebuildResults() {
         if (gridContainer == null) return;
         String query = searchBox == null ? "" : searchBox.getText().toString().trim();
+        main.removeCallbacks(loadMoreTask);
         results = ItemRegistry.search(context, query, MAX_ROWS);
         gridContainer.removeAllViews();
         shownCount = 0;

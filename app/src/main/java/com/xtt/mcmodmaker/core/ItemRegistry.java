@@ -298,15 +298,15 @@ public final class ItemRegistry {
         String q = query == null ? "" : query.trim().toLowerCase();
         List<Entry> out = new ArrayList<>();
         if (q.isEmpty()) {
+            // 没有关键字时也要能翻到底：自定义 → 常用物品 → 其余（多半是方块）
             out.addAll(mine);
+            List<Entry> rest = new ArrayList<>();
             for (Entry e : vanilla(context)) {
                 if ("Items".equals(e.category)) out.add(e);
-                if (out.size() >= limit) break;
+                else rest.add(e);
             }
-            if (out.isEmpty()) {
-                out.addAll(pool.subList(0, Math.min(limit, pool.size())));
-            }
-            return out;
+            out.addAll(rest);
+            return out.size() > limit ? new ArrayList<>(out.subList(0, limit)) : out;
         }
 
         List<Entry> t1 = new ArrayList<>();
