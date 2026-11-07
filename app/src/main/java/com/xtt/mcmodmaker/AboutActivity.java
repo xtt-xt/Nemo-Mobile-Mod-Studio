@@ -299,14 +299,16 @@ public class AboutActivity extends Activity {
                 }
                 new OreDialogBuilder(AboutActivity.this)
                         .setTitle("清除已保存的密码")
-                        .setMessage("清除后当前登录仍然有效，但登录失效时就不能自动重新登录了，需要重新输入密码。")
+                        .setMessage("清除后会同时退出登录，之后需要重新输入邮箱和密码才能继续管理作品。")
                         .setNegativeButton("取消", new DialogInterface.OnClickListener() {
                             @Override public void onClick(DialogInterface d, int w) { d.dismiss(); }
                         })
                         .setPositiveButton("清除", new DialogInterface.OnClickListener() {
                             @Override public void onClick(DialogInterface d, int w) {
-                                DevAuth.clearPassword(AboutActivity.this);
-                                UiUtils.toast(AboutActivity.this, "已清除保存的密码");
+                                // 密码一清就没法自动重登了，登录态跟着一起退出，
+                                // 免得留着一个「登录着但续不了期」的半吊子状态
+                                DevAuth.clear(AboutActivity.this);
+                                UiUtils.toast(AboutActivity.this, "已清除保存的密码并退出登录");
                                 updateAccountCard(state, clearBtn);
                                 d.dismiss();
                             }

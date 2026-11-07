@@ -1718,6 +1718,8 @@ public class MainActivity extends Activity {
     private OreTextView titleView;
     /** 「记住密码」开关。 */
     private OreSwitch rememberSwitch;
+    /** 上次看到的 Cookie，用于从别的页面回来后判断登录态有没有变。 */
+    private String lastSeenCookie = "";
 
     private void setupManagerPage() {
         if (managerInitialized) return;
@@ -1899,6 +1901,7 @@ public class MainActivity extends Activity {
         final DevAuth auth = DevAuth.load(this);
         final String cookie = auth == null ? "" : auth.cookie;
         final String email = auth == null ? "" : auth.email;
+        lastSeenCookie = cookie == null ? "" : cookie;
         if (cookie == null || cookie.isEmpty()) {
             managerStatusText.setText("未登录");
             managerLoginBox.setVisibility(View.VISIBLE);
@@ -2422,6 +2425,14 @@ public class MainActivity extends Activity {
         if (checkStoragePermission()) {
             loadProjects();
             autoCheckForUpdate();
+        }
+        // 在关于页清掉账号密码（或别处退出登录）后回来，管理页要立刻跟着变
+        if (managerStatusText != null) {
+            String now = DevAuth.cookie(this);
+            if (!now.equals(lastSeenCookie)) {
+                lastSeenCookie = now;
+                refreshLoginState();
+            }
         }
     }
 
