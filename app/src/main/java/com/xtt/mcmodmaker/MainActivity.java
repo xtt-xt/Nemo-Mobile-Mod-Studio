@@ -21,6 +21,7 @@ import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.inputmethod.InputMethodManager;
+import android.widget.CompoundButton;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -403,7 +404,7 @@ public class MainActivity extends Activity {
     private void showSettingsPage() {
         aboutContainer.removeAllViews();
         // 关于分栏
-        aboutContainer.addView(settingsCard("关于", "版本信息、开源地址、开源鸣谢",
+        aboutContainer.addView(settingsCard("关于", "版本信息、检查更新、开源地址",
                 android.R.drawable.ic_menu_info_details, AboutActivity.class));
         // 代码高亮分栏
         aboutContainer.addView(settingsCard("代码高亮", "文件类型高亮开关、语法颜色配置",
@@ -1715,6 +1716,8 @@ public class MainActivity extends Activity {
     private OreButton addWorkBtn;
     /** 左上角标题，随分页切换文字。 */
     private OreTextView titleView;
+    /** 「记住密码」开关。 */
+    private OreSwitch rememberSwitch;
 
     private void setupManagerPage() {
         if (managerInitialized) return;
@@ -1835,6 +1838,32 @@ public class MainActivity extends Activity {
         box.addView(pwdInput);
         UiUtils.addGap(this, box, 8);
 
+        // 记住密码：关掉就只保存 Cookie，换机或重装后需要重新输密码
+        LinearLayout rememberRow = new LinearLayout(this);
+        rememberRow.setOrientation(LinearLayout.HORIZONTAL);
+        rememberRow.setGravity(Gravity.CENTER_VERTICAL);
+        OreTextView rememberLabel = new OreTextView(this);
+        rememberLabel.setText("记住密码（登录失效时自动重新登录）");
+        rememberLabel.setTextColor(Color.parseColor("#CCCCCC"));
+        rememberLabel.setTextSize(12);
+        rememberLabel.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        rememberRow.addView(rememberLabel);
+        rememberSwitch = new OreSwitch(this);
+        rememberSwitch.setChecked(settings.getBoolean(Constants.PREFS_MC_REMEMBER, true));
+        rememberSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(android.widget.CompoundButton buttonView, boolean isChecked) {
+                settings.putBoolean(Constants.PREFS_MC_REMEMBER, isChecked);
+                if (!isChecked) {
+                    // 立刻把已经存下来的密码抹掉，别等下次登录
+                    DevAuth.clearPassword(MainActivity.this);
+                }
+            }
+        });
+        rememberRow.addView(rememberSwitch);
+        box.addView(rememberRow);
+        UiUtils.addGap(this, box, 8);
+
         LinearLayout btnRow = new LinearLayout(this);
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
         btnRow.setGravity(Gravity.CENTER);
@@ -1926,10 +1955,12 @@ public class MainActivity extends Activity {
                 UiUtils.runOnUiThread(new Runnable() {
                     @Override public void run() {
                         if (cookie != null && !cookie.isEmpty()) {
-                            // 账号密码一起存下来，登录失效时能自动重登
+                            // 记住密码时连密码一起存，登录失效能自动重登；
+                            // 关掉就只留 Cookie 和邮箱，密码不落盘
+                            boolean remember = settings.getBoolean(Constants.PREFS_MC_REMEMBER, true);
                             DevAuth auth = new DevAuth();
                             auth.email = email;
-                            auth.password = pwd;
+                            auth.password = remember ? pwd : "";
                             auth.cookie = cookie;
                             DevAuth.save(MainActivity.this, auth);
                             // 明文那份不再保留

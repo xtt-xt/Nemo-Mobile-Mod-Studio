@@ -132,6 +132,20 @@ public final class DevAuth {
         if (f.exists()) f.delete();
     }
 
+    /** 只清掉保存的密码，Cookie 和邮箱留着，当前会话还能继续用。 */
+    public static synchronized void clearPassword(Context context) {
+        DevAuth auth = load(context);
+        if (auth == null) return;
+        auth.password = "";
+        save(context, auth);
+    }
+
+    /** 有没有存过密码。 */
+    public static boolean hasPassword(Context context) {
+        DevAuth auth = load(context);
+        return auth != null && auth.password != null && !auth.password.isEmpty();
+    }
+
     // ==================== 便捷读取 ====================
 
     /** 当前 Cookie；没有就返回空串。 */

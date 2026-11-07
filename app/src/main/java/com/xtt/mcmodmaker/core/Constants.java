@@ -45,6 +45,8 @@ public final class Constants {
     public static final String PREFS_MC_COOKIE = "mcdev_cookie";
     /** MCDev 登录邮箱。 */
     public static final String PREFS_MC_EMAIL = "mcdev_email";
+    /** 是否把密码一起存下来，用于登录失效后自动重新登录。 */
+    public static final String PREFS_MC_REMEMBER = "mcdev_remember_password";
 
     private Constants() {
     }

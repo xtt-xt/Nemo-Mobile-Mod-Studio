@@ -46,6 +46,9 @@
             android:name=".AboutActivity"
             android:theme="@style/Theme.AppCompat.Light.NoActionBar" />
         <activity
+            android:name=".CreditsActivity"
+            android:theme="@style/Theme.AppCompat.Light.NoActionBar" />
+        <activity
             android:name=".HighlightSettingsActivity"
             android:theme="@style/Theme.AppCompat.Light.NoActionBar" />
         <activity

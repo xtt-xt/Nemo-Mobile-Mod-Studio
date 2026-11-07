@@ -1,6 +1,7 @@
 package com.xtt.mcmodmaker;
 
 import android.app.Activity;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.graphics.Color;
@@ -14,15 +15,24 @@ import android.widget.ScrollView;
 
 import com.xtt.mcmodmaker.core.Constants;
 import com.xtt.mcmodmaker.core.ItemRegistry;
+import com.xtt.mcmodmaker.core.UpdateChecker;
+import com.xtt.mcmodmaker.net.DevAuth;
 import com.xtt.mcmodmaker.util.UiUtils;
 
 import dev1503.oreui.StyleSheet;
+import dev1503.oreui.dialog.OreDialogBuilder;
 import dev1503.oreui.widgets.OreButton;
 import dev1503.oreui.widgets.OreCard;
 import dev1503.oreui.widgets.OreTextView;
 
-/** 关于页面：应用介绍、版本、开源地址、开源鸣谢。 */
+/**
+ * 关于页面：应用介绍、版本（点击检查更新）、内置数据版本、账号密码、开源地址。
+ *
+ * 开源鸣谢条目多，单独放进 {@link CreditsActivity}，这里只留一个入口。
+ */
 public class AboutActivity extends Activity {
+
+    private OreTextView versionText;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -45,7 +55,7 @@ public class AboutActivity extends Activity {
         });
         page.addView(btnBack);
 
-        // 内容区独立滚动，避免较小屏幕下鸣谢卡片被截断。
+        // 内容区独立滚动，避免较小屏幕下内容被截断。
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         scroll.setBackgroundColor(Color.parseColor("#1E1E1E"));
@@ -74,26 +84,10 @@ public class AboutActivity extends Activity {
         tvAbout.setGravity(Gravity.CENTER);
         root.addView(tvAbout);
 
-        // 版本卡片
-        OreCard versionCard = new OreCard(this);
-        versionCard.setPadding(16, 12, 16, 12);
-        OreTextView versionText = new OreTextView(this);
-        String versionName = "未知";
-        int versionCode = 1;
-        try {
-            PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
-            versionName = info.versionName;
-            versionCode = info.versionCode;
-        } catch (Exception ignored) {
-        }
-        versionText.setText("当前版本：" + versionName + " (" + versionCode + ")");
-        versionText.setTextColor(Color.WHITE);
-        versionText.setTextSize(14);
-        versionText.setGravity(Gravity.CENTER);
-        versionCard.addView(versionText);
+        // 版本卡片：整块可点，点了就查更新
+        OreCard versionCard = buildVersionCard();
         LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        cardParams.gravity = Gravity.CENTER;
         cardParams.topMargin = UiUtils.dp(this, 8);
         versionCard.setLayoutParams(cardParams);
         root.addView(versionCard);
@@ -129,27 +123,241 @@ public class AboutActivity extends Activity {
         dataCard.setLayoutParams(dataParams);
         root.addView(dataCard);
 
+        // 账号：开发者平台保存的密码可以在这里清掉
+        root.addView(buildAccountCard());
+
         // 开源地址
         root.addView(linkCard("项目开源地址",
                 "github.com/xtt-xt/Nemo-Mobile-Mod-Studio", Constants.GITHUB_PAGE));
-        // MCDev API 文档致谢（本 App 管理页 API 实现参考）
-        root.addView(creditCard("MCDev API 接口文档",
-                "网易我的世界开发者平台非官方 API 接口文档\nGitHub 开源 + 在线部署（mcdev-docs.xtt.p8.ink）",
-                "作者 xtt-xt", "https://github.com/xtt-xt/mcdev-api-docs"));
-        // MCDevManager 致谢（登录加密 / 作品管理 API 参考来源）
-        root.addView(creditCard("MCDevManager",
-                "网易我的世界开发者内容管理工具（Kotlin Multiplatform）\n本 App 的开发者平台 API 实现参考其开源源码",
-                "感谢 BitterLemonn 及所有贡献者",
-                "https://github.com/BitterLemonn/MCDevManager"));
-        // Ore UI 致谢
-        root.addView(creditCard("界面组件库：Ore UI for Android",
-                "基于 OreUI 标准实现的纯 Kotlin 组件库\n使用 Apache License 2.0 开源许可",
-                "感谢原作者 TheChuan1503 及所有贡献者", Constants.ORE_UI_PAGE));
-        // 文件编辑器致谢（sora-editor）
-        root.addView(creditCard("代码编辑器：sora-editor",
-                "高性能开源代码编辑器（语法高亮 / 代码补全 / 搜索）\n使用 Apache License 2.0 开源许可",
-                "感谢作者 Rosemoe 及所有贡献者",
-                "https://github.com/Rosemoe/sora-editor"));
+        // 开源鸣谢（单独一页）
+        OreCard creditsCard = plainCard("开源鸣谢", "MCDev API 文档、MCDevManager、Ore UI、sora-editor");
+        creditsCard.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                startActivity(new Intent(AboutActivity.this, CreditsActivity.class));
+            }
+        });
+        root.addView(creditsCard);
+    }
+
+    /** 版本卡片：显示版本号，整块点一下就去 GitHub 查有没有新版本。 */
+    private OreCard buildVersionCard() {
+        OreCard card = new OreCard(this);
+        card.setPadding(16, 12, 16, 12);
+
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+
+        versionText = new OreTextView(this);
+        versionText.setTextColor(Color.WHITE);
+        versionText.setTextSize(14);
+        versionText.setGravity(Gravity.CENTER);
+        layout.addView(versionText);
+
+        OreTextView hint = new OreTextView(this);
+        hint.setText("点击检查更新");
+        hint.setTextColor(Color.parseColor("#8A8A8A"));
+        hint.setTextSize(10);
+        hint.setGravity(Gravity.CENTER);
+        hint.setPadding(0, UiUtils.dp(this, 3), 0, 0);
+        layout.addView(hint);
+
+        card.addView(layout);
+        refreshVersionText();
+        card.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { checkForUpdate(); }
+        });
+        return card;
+    }
+
+    private void refreshVersionText() {
+        if (versionText == null) return;
+        String versionName = "未知";
+        int versionCode = 1;
+        try {
+            PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            versionName = info.versionName;
+            versionCode = info.versionCode;
+        } catch (Exception ignored) {
+        }
+        versionText.setText("当前版本：" + versionName + " (" + versionCode + ")");
+    }
+
+    private void checkForUpdate() {
+        UiUtils.toast(this, "正在检查更新...");
+        String currentVersion = "";
+        try {
+            currentVersion = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception ignored) {
+        }
+        UpdateChecker.checkLatest(currentVersion, new UpdateChecker.Callback() {
+            @Override
+            public void onResult(final UpdateChecker.ReleaseInfo release) {
+                UiUtils.runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (release == null) {
+                            UiUtils.toast(AboutActivity.this, "已经是最新版本");
+                        } else {
+                            showUpdateDialog(release.version, release.body, release.htmlUrl);
+                        }
+                    }
+                });
+            }
+
+            @Override
+            public void onError(final String message) {
+                UiUtils.runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        UiUtils.toast(AboutActivity.this, "检查更新失败：" + message);
+                    }
+                });
+            }
+        });
+    }
+
+    private void showUpdateDialog(String newVersion, String body, final String releaseUrl) {
+        if (body != null && body.length() > 300) body = body.substring(0, 300) + "...";
+
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        int pad = UiUtils.dp(this, 16);
+        layout.setPadding(pad, pad, pad, pad);
+
+        OreTextView versionLabel = new OreTextView(this);
+        versionLabel.setText("发现新版本：" + newVersion);
+        versionLabel.setTextColor(Color.WHITE);
+        versionLabel.setTextSize(16);
+        layout.addView(versionLabel);
+        UiUtils.addGap(this, layout, 10);
+
+        OreTextView detailText = new OreTextView(this);
+        detailText.setText(body == null ? "" : body);
+        detailText.setTextColor(Color.GRAY);
+        detailText.setTextSize(12);
+        layout.addView(detailText);
+
+        OreDialogBuilder builder = new OreDialogBuilder(this);
+        builder.setTitle("更新");
+        builder.setView(layout);
+        builder.setNeutralButton("网盘下载", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                openBrowser(Constants.UPDATE_PAN_URL);
+                dialog.dismiss();
+            }
+        });
+        builder.getNeutralButton().setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+        builder.setPositiveButton("GitHub下载", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                openBrowser(releaseUrl);
+                dialog.dismiss();
+            }
+        });
+        builder.getPositiveButton().setStyleSheet(StyleSheet.STYLE_GREEN);
+        builder.setNegativeButton("稍后", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
+        });
+        builder.show();
+    }
+
+    /** 账号卡片：显示存没存密码，并提供清除按钮。 */
+    private OreCard buildAccountCard() {
+        OreCard card = new OreCard(this);
+        card.setPadding(16, 12, 16, 12);
+
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+
+        OreTextView title = new OreTextView(this);
+        title.setText("已保存的账号密码");
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(14);
+        layout.addView(title);
+
+        final OreTextView state = new OreTextView(this);
+        state.setTextColor(Color.parseColor("#AAAAAA"));
+        state.setTextSize(11);
+        state.setPadding(0, UiUtils.dp(this, 4), 0, 0);
+        layout.addView(state);
+
+        final OreButton clearBtn = new OreButton(this);
+        clearBtn.setText("清除已保存的密码");
+        clearBtn.setStyleSheet(StyleSheet.STYLE_RED);
+        LinearLayout.LayoutParams btnParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        btnParams.topMargin = UiUtils.dp(this, 8);
+        clearBtn.setLayoutParams(btnParams);
+        layout.addView(clearBtn);
+
+        card.addView(layout);
+
+        updateAccountCard(state, clearBtn);
+        clearBtn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                DevAuth auth = DevAuth.load(AboutActivity.this);
+                if (auth == null || auth.password == null || auth.password.isEmpty()) {
+                    UiUtils.toast(AboutActivity.this, "没有保存密码");
+                    return;
+                }
+                new OreDialogBuilder(AboutActivity.this)
+                        .setTitle("清除已保存的密码")
+                        .setMessage("清除后当前登录仍然有效，但登录失效时就不能自动重新登录了，需要重新输入密码。")
+                        .setNegativeButton("取消", new DialogInterface.OnClickListener() {
+                            @Override public void onClick(DialogInterface d, int w) { d.dismiss(); }
+                        })
+                        .setPositiveButton("清除", new DialogInterface.OnClickListener() {
+                            @Override public void onClick(DialogInterface d, int w) {
+                                DevAuth.clearPassword(AboutActivity.this);
+                                UiUtils.toast(AboutActivity.this, "已清除保存的密码");
+                                updateAccountCard(state, clearBtn);
+                                d.dismiss();
+                            }
+                        })
+                        .show();
+            }
+        });
+        return card;
+    }
+
+    private void updateAccountCard(OreTextView state, OreButton clearBtn) {
+        DevAuth auth = DevAuth.load(this);
+        boolean hasPwd = auth != null && auth.password != null && !auth.password.isEmpty();
+        boolean hasCookie = auth != null && auth.cookie != null && !auth.cookie.isEmpty();
+        StringBuilder sb = new StringBuilder();
+        if (auth != null && auth.email != null && !auth.email.isEmpty()) {
+            sb.append("账号：").append(auth.email).append('\n');
+        } else {
+            sb.append("账号：未保存\n");
+        }
+        sb.append("密码：").append(hasPwd ? "已保存，登录失效会自动重新登录" : "未保存");
+        if (!hasCookie) sb.append("\n当前没有登录");
+        state.setText(sb.toString());
+        clearBtn.setEnabled(hasPwd);
+    }
+
+    /** 只有标题和一行说明的卡片，不带箭头。 */
+    private OreCard plainCard(String title, String desc) {
+        OreCard card = new OreCard(this);
+        card.setPadding(16, 12, 16, 12);
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+
+        OreTextView tvTitle = new OreTextView(this);
+        tvTitle.setText(title);
+        tvTitle.setTextColor(Color.WHITE);
+        tvTitle.setTextSize(14);
+        layout.addView(tvTitle);
+
+        OreTextView tvDesc = new OreTextView(this);
+        tvDesc.setText(desc);
+        tvDesc.setTextColor(Color.GRAY);
+        tvDesc.setTextSize(11);
+        layout.addView(tvDesc);
+
+        card.addView(layout);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        params.topMargin = UiUtils.dp(this, 6);
+        card.setLayoutParams(params);
+        return card;
     }
 
     private OreCard linkCard(String title, String linkText, final String url) {
@@ -167,39 +375,6 @@ public class AboutActivity extends Activity {
         tvLink.setTextColor(Color.parseColor("#AAAAAA"));
         tvLink.setTextSize(11);
         layout.addView(tvLink);
-        card.addView(layout);
-        if (url != null) {
-            card.setOnClickListener(new View.OnClickListener() {
-                @Override public void onClick(View v) { openBrowser(url); }
-            });
-        }
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        params.topMargin = UiUtils.dp(this, 6);
-        card.setLayoutParams(params);
-        return card;
-    }
-
-    private OreCard creditCard(String title, String desc, String credit, final String url) {
-        OreCard card = new OreCard(this);
-        card.setPadding(16, 12, 16, 12);
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        OreTextView tvTitle = new OreTextView(this);
-        tvTitle.setText(title);
-        tvTitle.setTextColor(Color.WHITE);
-        tvTitle.setTextSize(14);
-        layout.addView(tvTitle);
-        OreTextView tvDesc = new OreTextView(this);
-        tvDesc.setText(desc);
-        tvDesc.setTextColor(Color.GRAY);
-        tvDesc.setTextSize(11);
-        layout.addView(tvDesc);
-        OreTextView tvCredit = new OreTextView(this);
-        tvCredit.setText(credit);
-        tvCredit.setTextColor(Color.parseColor("#AAAAAA"));
-        tvCredit.setTextSize(10);
-        layout.addView(tvCredit);
         card.addView(layout);
         if (url != null) {
             card.setOnClickListener(new View.OnClickListener() {
