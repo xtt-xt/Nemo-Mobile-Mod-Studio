@@ -1370,30 +1370,31 @@ public class MainActivity extends Activity {
         OreDialogBuilder builder = new OreDialogBuilder(this);
         builder.setTitle("导入模组");
         builder.setView(centeredMessage("请选择导入方式"));
-        builder.setPositiveButton("选择ZIP导入", new DialogInterface.OnClickListener() {
-            @Override public void onClick(DialogInterface dialog, int which) { openZipPicker(); dialog.dismiss(); }
-        });
-        builder.getPositiveButton().setStyleSheet(StyleSheet.STYLE_GREEN);
-        builder.setNegativeButton("选择文件夹导入", new DialogInterface.OnClickListener() {
-            @Override public void onClick(DialogInterface dialog, int which) { openFolderPicker(); dialog.dismiss(); }
-        });
-        // 暂停“从开发者平台导入”：平台下载的是加密发布包，并非可编辑的 Nemo 源项目 ZIP。
-        // 保留实现代码供后续接入官方源项目导出接口时复用。
-        /*
-        builder.addButton("从开发者平台导入", StyleSheet.STYLE_WHITE, new DialogInterface.OnClickListener() {
+        builder.setButtonOrientation(LinearLayout.VERTICAL);
+        builder.addButton("选择 ZIP 导入", StyleSheet.STYLE_GREEN, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface dialog, int which) {
                 dialog.dismiss();
-                showPlatformWorkPicker();
+                openZipPicker();
             }
         });
-        */
-        builder.setNeutralButton("取消", new DialogInterface.OnClickListener() {
+        builder.addButton("选择文件夹导入", StyleSheet.STYLE_WHITE, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                dialog.dismiss();
+                openFolderPicker();
+            }
+        });
+        builder.addButton("从 GitHub 导入", StyleSheet.STYLE_DARK_GRAY, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                dialog.dismiss();
+                startActivity(new Intent(MainActivity.this, GitHubImportActivity.class));
+            }
+        });
+        builder.addButton("取消", StyleSheet.STYLE_WHITE, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
         });
         builder.show();
     }
 
-    /** 使用已有的开发者平台作品列表，选择作品后下载资源 ZIP 并复用 ZIP 导入流程。 */
     private void showPlatformWorkPicker() {
         final String cookie = settings.getString(Constants.PREFS_MC_COOKIE, "");
         if (cookie == null || cookie.isEmpty()) {

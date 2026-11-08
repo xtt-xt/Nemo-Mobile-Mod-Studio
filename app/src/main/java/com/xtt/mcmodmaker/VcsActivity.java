@@ -14,6 +14,7 @@ import android.widget.ScrollView;
 
 import com.xtt.mcmodmaker.core.GitRepo;
 import com.xtt.mcmodmaker.core.GitWorkspace;
+import com.xtt.mcmodmaker.net.GitAuth;
 import com.xtt.mcmodmaker.util.DateUtils;
 import com.xtt.mcmodmaker.util.JsonUtils;
 import com.xtt.mcmodmaker.util.UiUtils;
@@ -51,7 +52,11 @@ public class VcsActivity extends Activity {
     private OreButton tabAuto;
     private OreButton tabTag;
     private OreTextView summary;
+    private OreCard remoteCard;
+    private OreTextView remoteTitle;
+    private OreTextView remoteSub;
     private OreEditText searchBox;
+    private String remoteUrl = "";
     private LinearLayout listContainer;
 
     private int currentTab = TAB_AUTO;
@@ -117,6 +122,28 @@ public class VcsActivity extends Activity {
         summary.setTextSize(11);
         summary.setPadding(0, UiUtils.dp(this, 2), 0, 0);
         page.addView(summary);
+        UiUtils.addGap(this, page, UiUtils.dp(this, 10));
+
+        // 远端仓库入口
+        remoteCard = new OreCard(this);
+        remoteCard.setOrientation(LinearLayout.VERTICAL);
+        remoteCard.setPadding(UiUtils.dp(this, 14), UiUtils.dp(this, 12),
+                UiUtils.dp(this, 14), UiUtils.dp(this, 12));
+        remoteTitle = new OreTextView(this);
+        remoteTitle.setTextColor(Color.WHITE);
+        remoteTitle.setTextSize(13);
+        remoteCard.addView(remoteTitle);
+        remoteSub = new OreTextView(this);
+        remoteSub.setTextColor(Color.parseColor("#9A9A9A"));
+        remoteSub.setTextSize(10);
+        remoteSub.setMaxLines(2);
+        remoteSub.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+        remoteSub.setPadding(0, UiUtils.dp(this, 3), 0, 0);
+        remoteCard.addView(remoteSub);
+        remoteCard.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { onRemoteCardClick(); }
+        });
+        page.addView(remoteCard);
         UiUtils.addGap(this, page, UiUtils.dp(this, 10));
 
         searchBox = new OreEditText(this);
@@ -185,6 +212,7 @@ public class VcsActivity extends Activity {
                     repo.ensureInit("初始提交");
                     commits = repo.commits(1000);
                     tags = repo.tags();
+                    remoteUrl = repo.remoteUrl();
                 } catch (Exception e) {
                     error = String.valueOf(e.getMessage());
                     LogUtil.logException(e);
@@ -197,6 +225,7 @@ public class VcsActivity extends Activity {
                         } else {
                             summary.setText("共 " + commits.size() + " 次自动保存 · "
                                     + tags.size() + " 个版本备份");
+                            renderRemoteCard();
                             render();
                         }
                     }
@@ -210,6 +239,359 @@ public class VcsActivity extends Activity {
         tabAuto.setStyleSheet(tab == TAB_AUTO ? StyleSheet.STYLE_GREEN : StyleSheet.STYLE_DARK_GRAY);
         tabTag.setStyleSheet(tab == TAB_TAG ? StyleSheet.STYLE_GREEN : StyleSheet.STYLE_DARK_GRAY);
         render();
+    }
+
+    // ==================== 远端 ====================
+
+    private void renderRemoteCard() {
+        if (remoteCard == null) return;
+        if (remoteUrl == null || remoteUrl.trim().isEmpty()) {
+            remoteTitle.setText("关联远端仓库");
+            remoteTitle.setTextColor(Color.WHITE);
+            remoteSub.setText("还没有关联，点这里填一个仓库地址");
+        } else {
+            remoteTitle.setText("已关联远端仓库");
+            remoteTitle.setTextColor(Color.parseColor("#7ED321"));
+            remoteSub.setText(remoteUrl);
+        }
+    }
+
+    private void onRemoteCardClick() {
+        if (remoteUrl == null || remoteUrl.trim().isEmpty()) {
+            showRemoteDialog();
+            return;
+        }
+        OreDialogBuilder b = new OreDialogBuilder(this);
+        b.setTitle("远端仓库");
+        b.setButtonOrientation(LinearLayout.VERTICAL);
+        b.addButton("推送", StyleSheet.STYLE_GREEN, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+                doPush();
+            }
+        });
+        b.addButton("拉取", StyleSheet.STYLE_WHITE, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+                doPull();
+            }
+        });
+        b.addButton("修改地址", StyleSheet.STYLE_DARK_GRAY, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+                showRemoteDialog();
+            }
+        });
+        b.addButton("解除关联", StyleSheet.STYLE_RED, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+                confirmRemoveRemote();
+            }
+        });
+        b.addButton("取消", StyleSheet.STYLE_WHITE, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) { d.dismiss(); }
+        });
+        b.show();
+    }
+
+    /** 填远端地址。 */
+    private void showRemoteDialog() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = UiUtils.dp(this, 8);
+        box.setPadding(pad, pad, pad, pad);
+
+        final OreEditText input = new OreEditText(this);
+        input.setHint("https://github.com/用户名/仓库.git");
+        input.setSingleLine(true);
+        if (remoteUrl != null) input.setText(remoteUrl);
+        box.addView(input);
+
+        OreTextView tip = new OreTextView(this);
+        tip.setText("需要先推送一次，仓库才会出现在 GitHub 上；空仓库也可以");
+        tip.setTextColor(Color.parseColor("#9A9A9A"));
+        tip.setTextSize(10);
+        tip.setPadding(0, UiUtils.dp(this, 8), 0, 0);
+        box.addView(tip);
+
+        OreDialogBuilder b = new OreDialogBuilder(this);
+        b.setTitle("远端仓库地址");
+        b.setView(box);
+        b.setPositiveButton("保存", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                String url = input.getText().toString().trim();
+                d.dismiss();
+                if (url.isEmpty()) return;
+                if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                    UiUtils.toast(VcsActivity.this, "只支持 http(s) 地址");
+                    return;
+                }
+                saveRemote(url);
+            }
+        });
+        b.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) { d.dismiss(); }
+        });
+        b.getNegativeButton().setStyleSheet(StyleSheet.STYLE_WHITE);
+        b.show();
+    }
+
+    private void saveRemote(final String url) {
+        executor.execute(new Runnable() {
+            @Override public void run() {
+                String error = null;
+                try {
+                    repo.ensureInit("初始提交");
+                    repo.setRemote(url);
+                    remoteUrl = url;
+                } catch (Exception e) {
+                    error = String.valueOf(e.getMessage());
+                    LogUtil.logException(e);
+                }
+                final String err = error;
+                main.post(new Runnable() {
+                    @Override public void run() {
+                        if (err != null) UiUtils.toast(VcsActivity.this, "保存失败：" + err);
+                        else {
+                            UiUtils.toast(VcsActivity.this, "已关联远端仓库");
+                            renderRemoteCard();
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    private void confirmRemoveRemote() {
+        OreTextView msg = new OreTextView(this);
+        msg.setText("只解除本机的关联，GitHub 上的仓库和内容都不动。");
+        msg.setTextColor(Color.WHITE);
+        msg.setTextSize(13);
+        int pad = UiUtils.dp(this, 8);
+        msg.setPadding(pad, pad, pad, pad);
+
+        OreDialogBuilder b = new OreDialogBuilder(this);
+        b.setTitle("解除关联");
+        b.setView(msg);
+        b.setPositiveButton("解除", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+                executor.execute(new Runnable() {
+                    @Override public void run() {
+                        try {
+                            repo.removeRemote();
+                            remoteUrl = "";
+                        } catch (Exception e) {
+                            LogUtil.logException(e);
+                        }
+                        main.post(new Runnable() {
+                            @Override public void run() { renderRemoteCard(); }
+                        });
+                    }
+                });
+            }
+        });
+        b.getPositiveButton().setStyleSheet(StyleSheet.STYLE_RED);
+        b.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) { d.dismiss(); }
+        });
+        b.getNegativeButton().setStyleSheet(StyleSheet.STYLE_WHITE);
+        b.show();
+    }
+
+    /** 推送前先确认令牌：没填就直接把他引到设置页。 */
+    private boolean ensureToken() {
+        if (GitAuth.hasToken(this)) return true;
+        OreDialogBuilder b = new OreDialogBuilder(this);
+        b.setTitle("需要 GitHub 令牌");
+        OreTextView msg = new OreTextView(this);
+        msg.setText("推送和拉取私有仓库都要用令牌，先去设置页填一个。");
+        msg.setTextColor(Color.WHITE);
+        msg.setTextSize(13);
+        int pad = UiUtils.dp(this, 8);
+        msg.setPadding(pad, pad, pad, pad);
+        b.setView(msg);
+        b.setPositiveButton("去设置", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+                UiUtils.toast(VcsActivity.this, "在「设置 → GitHub 令牌」里填");
+            }
+        });
+        b.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) { d.dismiss(); }
+        });
+        b.getNegativeButton().setStyleSheet(StyleSheet.STYLE_WHITE);
+        b.show();
+        return false;
+    }
+
+    private void doPush() {
+        if (!ensureToken()) return;
+        UiUtils.toast(this, "正在推送…");
+        final String token = GitAuth.token(this);
+        executor.execute(new Runnable() {
+            @Override public void run() {
+                String error = null;
+                String branch = null;
+                try {
+                    repo.ensureInit("初始提交");
+                    repo.commitIfChanged(GitWorkspace.autoMessage(System.currentTimeMillis()));
+                    branch = repo.push(token);
+                } catch (Exception e) {
+                    error = describe(e);
+                    LogUtil.logException(e);
+                }
+                final String err = error;
+                final String br = branch;
+                main.post(new Runnable() {
+                    @Override public void run() {
+                        if (err != null) UiUtils.toast(VcsActivity.this, "推送失败：" + err);
+                        else UiUtils.toast(VcsActivity.this, "已推送到 " + br);
+                        reload();
+                    }
+                });
+            }
+        });
+    }
+
+    private void doPull() {
+        // 公开仓库不用令牌也能拉；私有仓库会由服务端拒绝，错误提示里会说清
+        UiUtils.toast(this, "正在检查远端…");
+        final String token = GitAuth.token(this);
+        executor.execute(new Runnable() {
+            @Override public void run() {
+                String error = null;
+                GitRepo.PullInfo info = null;
+                try {
+                    repo.ensureInit("初始提交");
+                    info = repo.fetchAndInspect(token);
+                } catch (Exception e) {
+                    error = describe(e);
+                    LogUtil.logException(e);
+                }
+                final String err = error;
+                final GitRepo.PullInfo result = info;
+                main.post(new Runnable() {
+                    @Override public void run() {
+                        if (err != null) {
+                            UiUtils.toast(VcsActivity.this, "拉取失败：" + err);
+                            return;
+                        }
+                        handlePull(result);
+                    }
+                });
+            }
+        });
+    }
+
+    private void handlePull(GitRepo.PullInfo info) {
+        switch (info.state) {
+            case GitRepo.PULL_SAME:
+                UiUtils.toast(this, "已经和远端一样了");
+                break;
+            case GitRepo.PULL_REMOTE_AHEAD:
+                applyPull(info.remoteId, false);
+                break;
+            case GitRepo.PULL_LOCAL_AHEAD:
+                askPushNow();
+                break;
+            case GitRepo.PULL_NO_REMOTE_BRANCH:
+                askPushNow();
+                break;
+            default:
+                askDiverged(info);
+                break;
+        }
+    }
+
+    private void askPushNow() {
+        OreDialogBuilder b = new OreDialogBuilder(this);
+        b.setTitle("本地比远端新");
+        OreTextView msg = new OreTextView(this);
+        msg.setText("远端没有需要拉取的内容，要把本地的改动推上去吗？");
+        msg.setTextColor(Color.WHITE);
+        msg.setTextSize(13);
+        int pad = UiUtils.dp(this, 8);
+        msg.setPadding(pad, pad, pad, pad);
+        b.setView(msg);
+        b.setPositiveButton("推送", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+                doPush();
+            }
+        });
+        b.getPositiveButton().setStyleSheet(StyleSheet.STYLE_GREEN);
+        b.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) { d.dismiss(); }
+        });
+        b.getNegativeButton().setStyleSheet(StyleSheet.STYLE_WHITE);
+        b.show();
+    }
+
+    /** 分叉：让用户选保留哪边。 */
+    private void askDiverged(final GitRepo.PullInfo info) {
+        OreDialogBuilder b = new OreDialogBuilder(this);
+        b.setTitle("本地和远端都有新改动");
+        b.setButtonOrientation(LinearLayout.VERTICAL);
+        b.addButton("以远端为准", StyleSheet.STYLE_GREEN, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+                applyPull(info.remoteId, true);
+            }
+        });
+        b.addButton("保留本地，放弃这次拉取", StyleSheet.STYLE_WHITE, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) { d.dismiss(); }
+        });
+        b.show();
+    }
+
+    /**
+     * 把工作区切到远端那个提交。
+     *
+     * @param byRemote 分叉时选「以远端为准」：先给现在的内容打一个标签再覆盖，
+     *                 免得本地那版直接没了
+     */
+    private void applyPull(final String remoteCommit, final boolean byRemote) {
+        executor.execute(new Runnable() {
+            @Override public void run() {
+                String error = null;
+                try {
+                    if (byRemote) {
+                        repo.commitIfChanged(GitWorkspace.autoMessage(System.currentTimeMillis()));
+                        repo.createTag(repo.uniqueTagName("remote-before"),
+                                "拉取覆盖前的本地自动备份");
+                    }
+                    repo.hardResetTo(remoteCommit);
+                } catch (Exception e) {
+                    error = describe(e);
+                    LogUtil.logException(e);
+                }
+                final String err = error;
+                main.post(new Runnable() {
+                    @Override public void run() {
+                        if (err != null) UiUtils.toast(VcsActivity.this, "拉取失败：" + err);
+                        else UiUtils.toast(VcsActivity.this, "已更新到远端版本");
+                        reload();
+                    }
+                });
+            }
+        });
+    }
+
+    /** 把 JGit 的一长串异常压成一句能看的话。 */
+    private String describe(Exception e) {
+        String msg = e.getMessage();
+        if (msg == null) return e.getClass().getSimpleName();
+        if (msg.contains("not authorized") || msg.contains("Authentication is required")) {
+            return "令牌无效或没有这个仓库的权限";
+        }
+        if (msg.contains("rejected") || msg.contains("non-fast-forward")) {
+            return "远端有本地没有的改动，先拉取";
+        }
+        if (msg.contains("not found") || msg.contains("Repository not found")) {
+            return "仓库不存在，或令牌没有权限";
+        }
+        return msg;
     }
 
     // ==================== 界面 ====================

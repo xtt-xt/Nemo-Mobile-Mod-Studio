@@ -337,7 +337,17 @@ public final class GitRepo {
         return name;
     }
 
-    // ==================== 远端（后续阶段用） ====================
+    // ==================== 远端 ====================
+
+    /** 当前分支名；还没提交过时返回默认分支名。 */
+    public String branch() {
+        try (Repository repo = open()) {
+            String b = repo.getBranch();
+            if (b != null) return b;
+        } catch (Exception ignored) {
+        }
+        return "master";
+    }
 
     public String remoteUrl() {
         if (!exists()) return "";
@@ -349,13 +359,154 @@ public final class GitRepo {
         }
     }
 
+    public boolean hasRemote() {
+        String url = remoteUrl();
+        return url != null && !url.trim().isEmpty();
+    }
+
     public void setRemote(String url) throws IOException {
         try (Repository repo = open()) {
-            repo.getConfig().setString("remote", "origin", "url", url);
+            repo.getConfig().setString("remote", "origin", "url", url.trim());
             repo.getConfig().setString("remote", "origin", "fetch",
                     "+refs/heads/*:refs/remotes/origin/*");
             repo.getConfig().save();
         }
+    }
+
+    public void removeRemote() throws IOException {
+        try (Repository repo = open()) {
+            // 只清 origin 这一节，别的远端别一起抹掉
+            repo.getConfig().unsetSection("remote", "origin");
+            repo.getConfig().save();
+        }
+    }
+
+    /** 把 origin 上另一个分支设成本分支的上游（推送第一次要先有它）。 */
+    private void setTracking(String branch) throws IOException {
+        try (Repository repo = open()) {
+            repo.getConfig().setString("branch", branch, "remote", "origin");
+            repo.getConfig().setString("branch", branch, "merge", "refs/heads/" + branch);
+            repo.getConfig().save();
+        }
+    }
+
+    /**
+     * 推送：本分支 + 所有版本标签。
+     *
+     * 标签也要推，否则「备份」只留在手机上，换台设备就没了。
+     * 不强制推送：远端有本地没有的提交时让服务端拒绝，由界面提示先拉取。
+     */
+    public String push(String token) throws IOException, GitAPIException {
+        if (!hasRemote()) throw new IOException("还没有关联远端仓库");
+        if (headId() == null) throw new IOException("仓库里还没有任何版本");
+        String branch = branch();
+        try (Git git = new Git(open())) {
+            git.push()
+                    .setRemote("origin")
+                    .setCredentialsProvider(credentials(token))
+                    // 显式写 refspec：分支 + 标签。
+                    // setPushTags() 和 setRefSpecs() 会互相覆盖，干脆两个都写进列表
+                    .setRefSpecs(new org.eclipse.jgit.transport.RefSpec(
+                                    "refs/heads/" + branch + ":refs/heads/" + branch),
+                            new org.eclipse.jgit.transport.RefSpec(
+                                    "refs/tags/*:refs/tags/*"))
+                    .call();
+            // 推成功了就把上游记下来，以后拉取知道对哪个分支
+            setTracking(branch);
+            return branch;
+        }
+    }
+
+    /** 拉取的三种结局。 */
+    public static final int PULL_SAME = 0;
+    /** 远端比本地新，可以直接快进。 */
+    public static final int PULL_REMOTE_AHEAD = 1;
+    /** 本地比远端新，没什么可拉的（该推送了）。 */
+    public static final int PULL_LOCAL_AHEAD = 2;
+    /** 两边都有新提交，分叉了，得由用户选保留哪边。 */
+    public static final int PULL_DIVERGED = 3;
+    /** 远端还没有这个分支。 */
+    public static final int PULL_NO_REMOTE_BRANCH = 4;
+
+    /** 一次拉取前的检查结果。 */
+    public static final class PullInfo {
+        public final int state;
+        public final String localId;
+        public final String remoteId;
+
+        PullInfo(int state, String localId, String remoteId) {
+            this.state = state;
+            this.localId = localId;
+            this.remoteId = remoteId;
+        }
+    }
+
+    /** 拉取第一步：fetch 完先看两边什么关系，不直接改工作区。 */
+    public PullInfo fetchAndInspect(String token) throws IOException, GitAPIException {
+        if (!hasRemote()) throw new IOException("还没有关联远端仓库");
+        String branch = branch();
+        try (Git git = new Git(open())) {
+            git.fetch()
+                    .setRemote("origin")
+                    .setCredentialsProvider(credentials(token))
+                    .setTagOpt(org.eclipse.jgit.transport.TagOpt.FETCH_TAGS)
+                    .call();
+        }
+        String local = headId();
+        String remote;
+        try (Repository repo = open()) {
+            ObjectId id = repo.resolve("refs/remotes/origin/" + branch);
+            remote = id == null ? null : id.getName();
+        }
+        if (remote == null) return new PullInfo(PULL_NO_REMOTE_BRANCH, local, null);
+        if (local == null) return new PullInfo(PULL_REMOTE_AHEAD, null, remote);
+        if (local.equals(remote)) return new PullInfo(PULL_SAME, local, remote);
+        if (isAncestor(local, remote)) return new PullInfo(PULL_REMOTE_AHEAD, local, remote);
+        if (isAncestor(remote, local)) return new PullInfo(PULL_LOCAL_AHEAD, local, remote);
+        return new PullInfo(PULL_DIVERGED, local, remote);
+    }
+
+    /** a 是不是 b 的祖先（即 a 已经在 b 的历史里）。 */
+    public boolean isAncestor(String a, String b) {
+        try (Repository repo = open(); RevWalk rw = new RevWalk(repo)) {
+            RevCommit ca = rw.parseCommit(repo.resolve(a));
+            RevCommit cb = rw.parseCommit(repo.resolve(b));
+            return rw.isMergedInto(ca, cb);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 把本地切到某个提交（分支跟着走），用于快进到远端 / 以远端为准。 */
+    public void hardResetTo(String commitId) throws IOException, GitAPIException {
+        try (Git git = new Git(open())) {
+            git.reset().setMode(ResetCommand.ResetType.HARD).setRef(commitId).call();
+        }
+        setTracking(branch());
+    }
+
+    /** 直接把项目克隆成一个新仓库。 */
+    public static void cloneInto(File dir, String url, String token) throws IOException, GitAPIException {
+        if (dir.exists() && dir.listFiles() != null && dir.listFiles().length > 0) {
+            throw new IOException("目标文件夹不是空的");
+        }
+        if (!dir.mkdirs() && !dir.isDirectory()) {
+            throw new IOException("无法创建文件夹：" + dir.getAbsolutePath());
+        }
+        try (Git git = Git.cloneRepository()
+                .setURI(url)
+                .setDirectory(dir)
+                .setCredentialsProvider(credentials(token))
+                .setCloneAllBranches(true)
+                .call()) {
+            // 关掉即完成；cloned repo 的 origin 已经配好
+        }
+    }
+
+    /** 从远端 url 推一个还没关联仓库的本地仓库：建好 origin 再推。 */
+    public void pushTo(String url, String token) throws IOException, GitAPIException {
+        setRemote(url);
+        push(token);
     }
 
     public static CredentialsProvider credentials(String token) {
