@@ -47,6 +47,12 @@ public final class Constants {
     public static final String PREFS_MC_EMAIL = "mcdev_email";
     /** 是否把密码一起存下来，用于登录失效后自动重新登录。 */
     public static final String PREFS_MC_REMEMBER = "mcdev_remember_password";
+    /** 版本库提交记录里的作者名。 */
+    public static final String PREFS_GIT_NAME = "git_author_name";
+    /** 版本库提交记录里的作者邮箱。 */
+    public static final String PREFS_GIT_EMAIL = "git_author_email";
+    /** GitHub 个人访问令牌（克隆 / 推送用）。 */
+    public static final String PREFS_GIT_TOKEN = "git_github_token";
 
     private Constants() {
     }

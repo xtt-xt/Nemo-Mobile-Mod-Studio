@@ -32,6 +32,8 @@ import android.widget.ScrollView;
 import android.widget.Toast;
 
 import com.xtt.mcmodmaker.core.Constants;
+import com.xtt.mcmodmaker.core.GitRepo;
+import com.xtt.mcmodmaker.core.GitWorkspace;
 import com.xtt.mcmodmaker.core.ItemRegistry;
 import com.xtt.mcmodmaker.core.ModTemplates;
 import com.xtt.mcmodmaker.core.ProjectManager;
@@ -106,6 +108,8 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
     private LruCache<String, Bitmap> thumbCache;
     /** 缩略图解码线程池，避免在主线程 decodeFile 造成进目录就卡。 */
     private java.util.concurrent.ExecutorService thumbExecutor;
+    /** 版本库操作线程池：提交 / 打标签都要读写一堆文件，不能放主线程。 */
+    private java.util.concurrent.ExecutorService gitExecutor;
 
     // ==================== 生命周期 ====================
 
@@ -132,6 +136,7 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
         projectDir = new File(projectPath);
         currentDir = projectDir;
         rootNode = scanDirectory(projectDir);
+        initVersionControl();
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             getWindow().setStatusBarColor(Color.TRANSPARENT);
@@ -491,9 +496,75 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
         panel.addView(accordion);
     }
 
+    /** 「创建备份」：给当前内容打一个版本标签，说明可以自己写。 */
     private void createBackupInEditor() {
-        ProjectManager pm = new ProjectManager(this);
-        pm.createBackup(projectDir);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = UiUtils.dp(this, 8);
+        box.setPadding(pad, pad, pad, pad);
+
+        OreTextView tip = new OreTextView(this);
+        tip.setText("写一句说明，方便以后在版本列表里认出来");
+        tip.setTextColor(Color.parseColor("#9A9A9A"));
+        tip.setTextSize(10);
+        box.addView(tip);
+
+        final OreEditText input = new OreEditText(this);
+        input.setHint("例如：配方调好了，先存一版");
+        input.setSingleLine(true);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = UiUtils.dp(this, 8);
+        input.setLayoutParams(lp);
+        box.addView(input);
+
+        OreDialogBuilder b = new OreDialogBuilder(this);
+        b.setTitle("创建备份");
+        b.setView(box);
+        b.setPositiveButton("保存", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                d.dismiss();
+                saveVersion(input.getText().toString().trim());
+            }
+        });
+        b.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) { d.dismiss(); }
+        });
+        b.getNegativeButton().setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+        b.show();
+    }
+
+    private void saveVersion(final String description) {
+        // 配方改动还压在防抖队列里，先落盘再打标签
+        if (recipeEditor != null) recipeEditor.flushPending();
+        if (gitExecutor == null) initVersionControl();
+        Toast.makeText(this, "正在保存…", Toast.LENGTH_SHORT).show();
+        gitExecutor.execute(new Runnable() {
+            @Override public void run() {
+                String error = null;
+                try {
+                    GitRepo repo = GitWorkspace.repo(EditorActivity.this, projectDir);
+                    repo.ensureInit("初始提交");
+                    long now = System.currentTimeMillis();
+                    repo.commitIfChanged(GitWorkspace.autoMessage(now));
+                    String message = description.isEmpty()
+                            ? "备份 " + com.xtt.mcmodmaker.util.DateUtils.formatMillis(now)
+                            : description;
+                    repo.createTag(repo.uniqueTagName("backup"), message);
+                } catch (Exception e) {
+                    error = String.valueOf(e.getMessage());
+                    LogUtil.logException(e);
+                }
+                final String err = error;
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        Toast.makeText(EditorActivity.this,
+                                err == null ? "已保存为一个版本" : "保存失败：" + err,
+                                Toast.LENGTH_SHORT).show();
+                    }
+                });
+            }
+        });
     }
 
     // ==================== 快速跳转 / 文件树 ====================
@@ -595,7 +666,8 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
         if (files == null) return node;
         for (File f : files) {
             String name = f.getName();
-            if (f.isDirectory() && (name.equals(".mcs") || name.endsWith("_back"))) continue;
+            if (f.isDirectory() && (name.equals(".mcs") || name.equals(GitRepo.GIT_DIR)
+                    || name.endsWith("_back"))) continue;
             node.children.add(scanDirectory(f));
         }
         return node;
@@ -685,7 +757,8 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
         List<File> files = new ArrayList<>();
         for (File f : allFiles) {
             String name = f.getName();
-            if (f.isDirectory() && (name.equals(".mcs") || name.endsWith("_back"))) continue;
+            if (f.isDirectory() && (name.equals(".mcs") || name.equals(GitRepo.GIT_DIR)
+                    || name.endsWith("_back"))) continue;
             if (f.isDirectory()) folders.add(f);
             else files.add(f);
         }
@@ -1387,6 +1460,8 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
     protected void onDestroy() {
         if (thumbExecutor != null) thumbExecutor.shutdownNow();
         if (recipeEditor != null) recipeEditor.flushPending();
+        // shutdown 而不是 shutdownNow：已经排队的自动保存还要写完
+        if (gitExecutor != null) gitExecutor.shutdown();
         super.onDestroy();
     }
 
@@ -1394,6 +1469,41 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
     protected void onPause() {
         super.onPause();
         if (recipeEditor != null) recipeEditor.flushPending();
+        // 退出编辑器（或切到后台）时把这一轮改动记进版本库
+        commitAutoSave();
+    }
+
+    // ==================== 版本库 ====================
+
+    /** 首次进入时把项目变成仓库，并留一个初始版本。 */
+    private void initVersionControl() {
+        if (gitExecutor != null) return;
+        gitExecutor = java.util.concurrent.Executors.newSingleThreadExecutor();
+        gitExecutor.execute(new Runnable() {
+            @Override public void run() {
+                try {
+                    GitWorkspace.repo(EditorActivity.this, projectDir).ensureInit("初始提交");
+                } catch (Exception e) {
+                    LogUtil.logException(e);
+                }
+            }
+        });
+    }
+
+    /** 把当前状态记一次自动保存；没有改动时不会产生空记录。 */
+    private void commitAutoSave() {
+        if (gitExecutor == null || projectDir == null) return;
+        gitExecutor.execute(new Runnable() {
+            @Override public void run() {
+                try {
+                    GitRepo repo = GitWorkspace.repo(EditorActivity.this, projectDir);
+                    repo.ensureInit("初始提交");
+                    repo.commitIfChanged(GitWorkspace.autoMessage(System.currentTimeMillis()));
+                } catch (Exception e) {
+                    LogUtil.logException(e);
+                }
+            }
+        });
     }
 
     // ==================== 删除 / 重命名 ====================

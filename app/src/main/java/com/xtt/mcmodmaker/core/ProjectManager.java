@@ -180,6 +180,8 @@ public class ProjectManager {
         if (files == null) return;
         byte[] buffer = new byte[8192];
         for (File file : files) {
+            // 版本库目录不进压缩包：它是本地历史，不是模组内容
+            if (file.isDirectory() && GitRepo.GIT_DIR.equals(file.getName())) continue;
             String entryName = rootDir.toURI().relativize(file.toURI()).getPath();
             if (file.isDirectory()) {
                 if (!entryName.endsWith("/")) entryName += "/";

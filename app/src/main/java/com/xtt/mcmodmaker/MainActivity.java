@@ -37,6 +37,7 @@ import androidx.documentfile.provider.DocumentFile;
 import com.xtt.mcmodmaker.net.DevAuth;
 import com.xtt.mcmodmaker.net.McDevApi;
 import com.xtt.mcmodmaker.core.Constants;
+import com.xtt.mcmodmaker.core.GitWorkspace;
 import com.xtt.mcmodmaker.core.ProjectManager;
 import com.xtt.mcmodmaker.core.UpdateChecker;
 import com.xtt.mcmodmaker.util.DateUtils;
@@ -409,18 +410,15 @@ public class MainActivity extends Activity {
         // 代码高亮分栏
         aboutContainer.addView(settingsCard("代码高亮", "文件类型高亮开关、语法颜色配置",
                 android.R.drawable.ic_menu_edit, HighlightSettingsActivity.class));
-    }
-    private OreCard settingsCard(String title, String desc, final Class<?> target) {
-        return settingsCard(title, desc, android.R.drawable.ic_menu_info_details, target);
+        // 版本记录的提交身份
+        aboutContainer.addView(actionCard("提交身份", "版本记录里的作者名和邮箱",
+                android.R.drawable.ic_menu_myplaces, new View.OnClickListener() {
+                    @Override public void onClick(View v) { showIdentityDialog(); }
+                }));
     }
 
-    /**
-     * 设置页的一行入口。
-     *
-     * 结构和首页的项目卡片一样：左边 80×80 的图标、右边标题加说明，
-     * 内边距也照抄，这样两个页面的卡片高度看起来是一致的。
-     */
-    private OreCard settingsCard(String title, String desc, int iconRes, final Class<?> target) {
+    /** 和设置页入口同构、但点了执行动作而不是跳页面的卡片。 */
+    private OreCard actionCard(String title, String desc, int iconRes, View.OnClickListener listener) {
         OreCard card = new OreCard(this);
         card.setPadding(16, 12, 16, 12);
 
@@ -454,19 +452,84 @@ public class MainActivity extends Activity {
         textLayout.addView(tvDesc);
 
         cardLayout.addView(textLayout);
-
         card.addView(cardLayout);
-        card.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                startActivity(new Intent(MainActivity.this, target));
-            }
-        });
+        card.setOnClickListener(listener);
+
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         params.bottomMargin = UiUtils.dp(this, 10);
         card.setLayoutParams(params);
         return card;
     }
+
+    /** 提交身份：名字和邮箱，写进每个模组仓库的配置里。 */
+    private void showIdentityDialog() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = UiUtils.dp(this, 8);
+        box.setPadding(pad, pad, pad, pad);
+
+        final OreEditText nameInput = new OreEditText(this);
+        nameInput.setHint("作者名");
+        nameInput.setSingleLine(true);
+        nameInput.setText(GitWorkspace.authorName(this));
+        box.addView(nameInput);
+
+        final OreEditText emailInput = new OreEditText(this);
+        emailInput.setHint("邮箱");
+        emailInput.setSingleLine(true);
+        emailInput.setText(GitWorkspace.authorEmail(this));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = UiUtils.dp(this, 8);
+        emailInput.setLayoutParams(lp);
+        box.addView(emailInput);
+
+        OreTextView tip = new OreTextView(this);
+        tip.setText("只影响以后新产生的版本记录");
+        tip.setTextColor(Color.parseColor("#9A9A9A"));
+        tip.setTextSize(10);
+        tip.setPadding(0, UiUtils.dp(this, 8), 0, 0);
+        box.addView(tip);
+
+        OreDialogBuilder builder = new OreDialogBuilder(this);
+        builder.setTitle("提交身份");
+        builder.setView(box);
+        builder.setPositiveButton("保存", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                String name = nameInput.getText().toString().trim();
+                String email = emailInput.getText().toString().trim();
+                if (name.isEmpty()) name = "Nemo 模组制作器";
+                if (email.isEmpty()) email = "nemo@local";
+                GitWorkspace.setIdentity(MainActivity.this, name, email);
+                UiUtils.toast(MainActivity.this, "已保存");
+                dialog.dismiss();
+            }
+        });
+        builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
+        });
+        builder.getNegativeButton().setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+        builder.show();
+    }
+    private OreCard settingsCard(String title, String desc, final Class<?> target) {
+        return settingsCard(title, desc, android.R.drawable.ic_menu_info_details, target);
+    }
+
+    /**
+     * 设置页的一行入口。
+     *
+     * 结构和首页的项目卡片一样：左边 80×80 的图标、右边标题加说明，
+     * 内边距也照抄，这样两个页面的卡片高度看起来是一致的。
+     */
+    private OreCard settingsCard(String title, String desc, int iconRes, final Class<?> target) {
+        return actionCard(title, desc, iconRes, new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                startActivity(new Intent(MainActivity.this, target));
+            }
+        });
+    }
+
     private OreCard linkCard(String title, String linkText, final String url) {
         OreCard card = new OreCard(this);
         card.setPadding(16, 12, 16, 12);
@@ -956,6 +1019,14 @@ public class MainActivity extends Activity {
                 dialog.dismiss();
             }
         });
+        builder.addButton("代码管理", StyleSheet.STYLE_DARK_GRAY, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                Intent intent = new Intent(MainActivity.this, VcsActivity.class);
+                intent.putExtra(VcsActivity.EXTRA_PROJECT_PATH, projectDir.getAbsolutePath());
+                startActivity(intent);
+                dialog.dismiss();
+            }
+        });
         builder.addButton("导出", StyleSheet.STYLE_PURPLE, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface dialog, int which) {
                 if (!checkStoragePermission()) {
@@ -997,10 +1068,11 @@ public class MainActivity extends Activity {
             @Override public void onClick(View v) { showRenameDialog(projectDir); }
         }));
         UiUtils.addGap(this, contentLayout, 8);
-        contentLayout.addView(settingButton("添加备份", StyleSheet.STYLE_DARK_GRAY, new View.OnClickListener() {
+        contentLayout.addView(settingButton("存一个版本", StyleSheet.STYLE_DARK_GRAY, new View.OnClickListener() {
             @Override public void onClick(View v) {
-                projectManager.createBackup(projectDir);
-                loadProjects();
+                Intent intent = new Intent(MainActivity.this, VcsActivity.class);
+                intent.putExtra(VcsActivity.EXTRA_PROJECT_PATH, projectDir.getAbsolutePath());
+                startActivity(intent);
             }
         }));
         UiUtils.addGap(this, contentLayout, 8);

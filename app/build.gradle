@@ -45,8 +45,10 @@ android {
         }
     }
 
-    // 兼容 Java 8 语法（lambda 等）
+    // 兼容 Java 8 语法（lambda 等）；JGit 内部用到 java.nio.file，
+    // 低版本 Android 上没有这套类，靠 nio 版脱糖补齐
     compileOptions {
+        coreLibraryDesugaringEnabled true
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
@@ -65,6 +67,10 @@ android {
 
 dependencies {
     implementation files('libs/ore-ui.jar')
+    // java.nio.file 脱糖（JGit 需要）
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs_nio:2.1.5'
+    // 纯 Java 的 git 实现：本地提交 / 版本标签 / 后续的克隆推送都靠它
+    implementation 'org.eclipse.jgit:org.eclipse.jgit:5.13.3.202401111512-r'
     implementation 'androidx.appcompat:appcompat:1.6.1'
     // 权限相关（ActivityCompat / ContextCompat）
     implementation 'androidx.core:core:1.15.0'
