@@ -45,12 +45,14 @@ public class VcsActivity extends Activity {
 
     private static final int TAB_AUTO = 0;
     private static final int TAB_TAG = 1;
+    private static final int TAB_REMOTE = 2;
 
     private File projectDir;
     private GitRepo repo;
 
     private OreButton tabAuto;
     private OreButton tabTag;
+    private OreButton tabRemote;
     private OreTextView summary;
     private OreCard remoteCard;
     private OreTextView remoteTitle;
@@ -64,6 +66,11 @@ public class VcsActivity extends Activity {
 
     private List<GitRepo.CommitInfo> commits = new ArrayList<>();
     private List<GitRepo.TagInfo> tags = new ArrayList<>();
+    /** 远端分支上的提交（拉取时顺带读到的）。 */
+    private List<GitRepo.CommitInfo> remoteCommits = new ArrayList<>();
+    /** 远端分支当前指向的提交、本地 HEAD，reload 时一并读好，画界面时不再碰磁盘。 */
+    private String remoteHeadId = "";
+    private String localHeadId = "";
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private ExecutorService executor;
@@ -166,18 +173,27 @@ public class VcsActivity extends Activity {
         tabAuto.setText("自动保存");
         tabTag = new OreButton(this);
         tabTag.setText("版本备份");
+        tabRemote = new OreButton(this);
+        tabRemote.setText("远端");
         LinearLayout.LayoutParams tabParams = new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         tabAuto.setLayoutParams(tabParams);
         tabTag.setLayoutParams(tabParams);
+        tabRemote.setLayoutParams(tabParams);
         tabAuto.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { switchTab(TAB_AUTO); }
         });
         tabTag.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { switchTab(TAB_TAG); }
         });
+        tabRemote.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { switchTab(TAB_REMOTE); }
+        });
         tabs.addView(tabAuto);
         tabs.addView(tabTag);
+        tabs.addView(tabRemote);
+        // 没关联远端时这一栏没用，先藏着；关联之后才出现
+        tabRemote.setVisibility(View.GONE);
         page.addView(tabs);
         UiUtils.addGap(this, page, UiUtils.dp(this, 8));
 
@@ -213,6 +229,12 @@ public class VcsActivity extends Activity {
                     commits = repo.commits(1000);
                     tags = repo.tags();
                     remoteUrl = repo.remoteUrl();
+                    // 远端提交直接用上次 fetch 的结果，不用每次都联网
+                    remoteCommits = repo.remoteCommits(300);
+                    String rh = repo.remoteHeadId();
+                    remoteHeadId = rh == null ? "" : rh;
+                    String lh = repo.headId();
+                    localHeadId = lh == null ? "" : lh;
                 } catch (Exception e) {
                     error = String.valueOf(e.getMessage());
                     LogUtil.logException(e);
@@ -236,16 +258,35 @@ public class VcsActivity extends Activity {
 
     private void switchTab(int tab) {
         currentTab = tab;
+        if (tab == TAB_REMOTE && !hasRemote()) tab = TAB_AUTO;
+        currentTab = tab;
         tabAuto.setStyleSheet(tab == TAB_AUTO ? StyleSheet.STYLE_GREEN : StyleSheet.STYLE_DARK_GRAY);
         tabTag.setStyleSheet(tab == TAB_TAG ? StyleSheet.STYLE_GREEN : StyleSheet.STYLE_DARK_GRAY);
+        tabRemote.setStyleSheet(tab == TAB_REMOTE ? StyleSheet.STYLE_GREEN : StyleSheet.STYLE_DARK_GRAY);
         render();
+    }
+
+    private boolean hasRemote() {
+        return remoteUrl != null && !remoteUrl.trim().isEmpty();
+    }
+
+    /** 远端栏只在关联仓库之后出现。 */
+    private void refreshTabVisibility() {
+        if (tabRemote != null) {
+            tabRemote.setVisibility(hasRemote() ? View.VISIBLE : View.GONE);
+        }
     }
 
     // ==================== 远端 ====================
 
     private void renderRemoteCard() {
         if (remoteCard == null) return;
-        if (remoteUrl == null || remoteUrl.trim().isEmpty()) {
+        refreshTabVisibility();
+        if (!hasRemote() && currentTab == TAB_REMOTE) {
+            currentTab = TAB_AUTO;
+            switchTab(TAB_AUTO);
+        }
+        if (!hasRemote()) {
             remoteTitle.setText("关联远端仓库");
             remoteTitle.setTextColor(Color.WHITE);
             remoteSub.setText("还没有关联，点这里填一个仓库地址");
@@ -425,8 +466,47 @@ public class VcsActivity extends Activity {
         return false;
     }
 
+    /** 推送前先写一句说明，作为这一版提交的标题。 */
     private void doPush() {
         if (!ensureToken()) return;
+        showPushDialog();
+    }
+
+    private void showPushDialog() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = UiUtils.dp(this, 8);
+        box.setPadding(pad, pad, pad, pad);
+
+        final OreEditText input = new OreEditText(this);
+        input.setHint("这次改了什么（可以不填）");
+        input.setSingleLine(true);
+        box.addView(input);
+
+        OreDialogBuilder b = new OreDialogBuilder(this);
+        b.setTitle("推送到远端");
+        b.setView(box);
+        b.setPositiveButton("推送", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                String desc = input.getText().toString().trim();
+                d.dismiss();
+                pushNow(desc);
+            }
+        });
+        b.getPositiveButton().setStyleSheet(StyleSheet.STYLE_GREEN);
+        b.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) { d.dismiss(); }
+        });
+        b.getNegativeButton().setStyleSheet(StyleSheet.STYLE_WHITE);
+        b.show();
+    }
+
+    /**
+     * 真正推送。
+     *
+     * @param description 用户填的说明；填了就作为提交信息，不填就退回自动保存那句
+     */
+    private void pushNow(final String description) {
         UiUtils.toast(this, "正在推送…");
         final String token = GitAuth.token(this);
         executor.execute(new Runnable() {
@@ -435,7 +515,10 @@ public class VcsActivity extends Activity {
                 String branch = null;
                 try {
                     repo.ensureInit("初始提交");
-                    repo.commitIfChanged(GitWorkspace.autoMessage(System.currentTimeMillis()));
+                    long now = System.currentTimeMillis();
+                    String message = description == null || description.isEmpty()
+                            ? GitWorkspace.autoMessage(now) : description;
+                    repo.commitIfChanged(message);
                     branch = repo.push(token);
                 } catch (Exception e) {
                     error = describe(e);
@@ -582,14 +665,23 @@ public class VcsActivity extends Activity {
     private String describe(Exception e) {
         String msg = e.getMessage();
         if (msg == null) return e.getClass().getSimpleName();
-        if (msg.contains("not authorized") || msg.contains("Authentication is required")) {
-            return "令牌无效或没有这个仓库的权限";
+        if (msg.contains("not authorized") || msg.contains("Authentication is required")
+                || msg.contains("Authentication not supported")) {
+            return "仓库地址可能写错了，或令牌没有这个仓库的权限";
         }
         if (msg.contains("rejected") || msg.contains("non-fast-forward")) {
             return "远端有本地没有的改动，先拉取";
         }
         if (msg.contains("not found") || msg.contains("Repository not found")) {
             return "仓库不存在，或令牌没有权限";
+        }
+        // 连不上 GitHub 是这台机器上最常见的一类：给个能动手的说明，别丢英文原文
+        String lower = msg.toLowerCase();
+        if (lower.contains("connection failed") || lower.contains("connection abort")
+                || lower.contains("failed to connect") || lower.contains("econnreset")
+                || lower.contains("timeout") || lower.contains("timed out")
+                || lower.contains("unknownhost") || lower.contains("unable to resolve")) {
+            return "连不上 GitHub（网络被重置或超时），换个网络或稍后再试";
         }
         return msg;
     }
@@ -611,6 +703,11 @@ public class VcsActivity extends Activity {
             });
             listContainer.addView(mark);
             UiUtils.addGap(this, listContainer, UiUtils.dp(this, 8));
+        }
+
+        if (currentTab == TAB_REMOTE) {
+            renderRemoteTab();
+            return;
         }
 
         int shown = 0;
@@ -654,6 +751,86 @@ public class VcsActivity extends Activity {
         }
     }
 
+    /**
+     * 远端栏：远端分支上的提交。
+     *
+     * fetch 过才有内容，所以这里给两个操作——刷新（只取不下）、拉取（取下来用）。
+     */
+    private void renderRemoteTab() {
+        OreButton refresh = new OreButton(this);
+        refresh.setText("刷新远端列表");
+        refresh.setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+        refresh.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        refresh.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { fetchRemoteList(); }
+        });
+        listContainer.addView(refresh);
+        UiUtils.addGap(this, listContainer, UiUtils.dp(this, 8));
+
+        if (remoteCommits.isEmpty()) {
+            OreTextView empty = new OreTextView(this);
+            empty.setText("还没有取过远端记录，点上面的「刷新远端列表」");
+            empty.setTextColor(Color.parseColor("#9A9A9A"));
+            empty.setTextSize(12);
+            empty.setPadding(0, UiUtils.dp(this, 4), 0, 0);
+            listContainer.addView(empty);
+            return;
+        }
+
+        int shown = 0;
+        for (final GitRepo.CommitInfo c : remoteCommits) {
+            String title = DateUtils.formatMillis(c.timeMillis);
+            boolean isHead = !remoteHeadId.isEmpty() && remoteHeadId.equals(c.id);
+            boolean sameAsLocal = !localHeadId.isEmpty() && localHeadId.equals(c.id);
+            String detail = c.shortId() + "　" + c.message;
+            if (!matches(title, detail)) continue;
+            // 本地这边已经有了的标个勾，一眼能看出还差几条没拉
+            String mark = sameAsLocal ? "✓ " : (isHead ? "◆ " : "");
+            listContainer.addView(versionCard(mark + title, detail, sameAsLocal ? 2 : 1,
+                    new View.OnClickListener() {
+                        @Override public void onClick(View v) {
+                            confirmRestore(c.id, "远端 " + DateUtils.formatMillis(c.timeMillis));
+                        }
+                    }));
+            UiUtils.addGap(this, listContainer, UiUtils.dp(this, 6));
+            shown++;
+        }
+        if (shown == 0) {
+            OreTextView empty = new OreTextView(this);
+            empty.setText("没有找到匹配的提交");
+            empty.setTextColor(Color.parseColor("#9A9A9A"));
+            empty.setTextSize(12);
+            listContainer.addView(empty);
+        }
+    }
+
+    /** 只 fetch 不改工作区，把远端提交列出来。 */
+    private void fetchRemoteList() {
+        UiUtils.toast(this, "正在读取远端…");
+        final String token = GitAuth.token(this);
+        executor.execute(new Runnable() {
+            @Override public void run() {
+                String error = null;
+                try {
+                    repo.ensureInit("初始提交");
+                    repo.fetchRemote(token);
+                    remoteCommits = repo.remoteCommits(300);
+                } catch (Exception e) {
+                    error = describe(e);
+                    LogUtil.logException(e);
+                }
+                final String err = error;
+                main.post(new Runnable() {
+                    @Override public void run() {
+                        if (err != null) UiUtils.toast(VcsActivity.this, "读取远端失败：" + err);
+                        render();
+                    }
+                });
+            }
+        });
+    }
+
     private boolean matches(String title, String detail) {
         if (query.isEmpty()) return true;
         String q = query.toLowerCase();
@@ -672,8 +849,11 @@ public class VcsActivity extends Activity {
                 UiUtils.dp(this, 14), UiUtils.dp(this, 12));
 
         OreTextView titleView = new OreTextView(this);
-        titleView.setText((kind == 1 ? "★ " : "") + title);
-        titleView.setTextColor(kind == 1 ? Color.parseColor("#7ED321") : Color.WHITE);
+        int color = Color.WHITE;
+        if (kind == 1) color = Color.parseColor("#7ED321");
+        else if (kind == 2) color = Color.parseColor("#9A9A9A");
+        titleView.setText(title);
+        titleView.setTextColor(color);
         titleView.setTextSize(13);
         titleView.setMaxLines(1);
         titleView.setEllipsize(android.text.TextUtils.TruncateAt.END);

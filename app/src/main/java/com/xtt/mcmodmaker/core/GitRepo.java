@@ -399,22 +399,34 @@ public final class GitRepo {
     public String push(String token) throws IOException, GitAPIException {
         if (!hasRemote()) throw new IOException("还没有关联远端仓库");
         if (headId() == null) throw new IOException("仓库里还没有任何版本");
-        String branch = branch();
-        try (Git git = new Git(open())) {
-            git.push()
-                    .setRemote("origin")
-                    .setCredentialsProvider(credentials(token))
-                    // 显式写 refspec：分支 + 标签。
-                    // setPushTags() 和 setRefSpecs() 会互相覆盖，干脆两个都写进列表
-                    .setRefSpecs(new org.eclipse.jgit.transport.RefSpec(
-                                    "refs/heads/" + branch + ":refs/heads/" + branch),
-                            new org.eclipse.jgit.transport.RefSpec(
-                                    "refs/tags/*:refs/tags/*"))
-                    .call();
-            // 推成功了就把上游记下来，以后拉取知道对哪个分支
-            setTracking(branch);
-            return branch;
+        final String branch = branch();
+        try {
+            withRetry(new Attempt<Void>() {
+                @Override public Void run() throws Exception {
+                    try (Git git = new Git(open())) {
+                        git.push()
+                                .setRemote("origin")
+                                .setTimeout(NET_TIMEOUT_SECONDS)
+                                .setCredentialsProvider(credentials(token))
+                                // 显式写 refspec：分支 + 标签。
+                                // setPushTags() 和 setRefSpecs() 会互相覆盖，干脆两个都写进列表
+                                .setRefSpecs(new org.eclipse.jgit.transport.RefSpec(
+                                                "refs/heads/" + branch + ":refs/heads/" + branch),
+                                        new org.eclipse.jgit.transport.RefSpec(
+                                                "refs/tags/*:refs/tags/*"))
+                                .call();
+                    }
+                    return null;
+                }
+            });
+        } catch (Exception e) {
+            if (e instanceof IOException) throw (IOException) e;
+            if (e instanceof GitAPIException) throw (GitAPIException) e;
+            throw new IOException(String.valueOf(e.getMessage()));
         }
+        // 推成功了就把上游记下来，以后拉取知道对哪个分支
+        setTracking(branch);
+        return branch;
     }
 
     /** 拉取的三种结局。 */
@@ -444,13 +456,26 @@ public final class GitRepo {
     /** 拉取第一步：fetch 完先看两边什么关系，不直接改工作区。 */
     public PullInfo fetchAndInspect(String token) throws IOException, GitAPIException {
         if (!hasRemote()) throw new IOException("还没有关联远端仓库");
-        String branch = branch();
-        try (Git git = new Git(open())) {
-            git.fetch()
-                    .setRemote("origin")
-                    .setCredentialsProvider(credentials(token))
-                    .setTagOpt(org.eclipse.jgit.transport.TagOpt.FETCH_TAGS)
-                    .call();
+        final String branch = branch();
+        try {
+            withRetry(new Attempt<Void>() {
+                @Override public Void run() throws Exception {
+                    try (Git git = new Git(open())) {
+                        git.fetch()
+                                .setRemote("origin")
+                                .setTimeout(NET_TIMEOUT_SECONDS)
+                                .setCredentialsProvider(credentials(token))
+                                .setTagOpt(org.eclipse.jgit.transport.TagOpt.FETCH_TAGS)
+                                .call();
+                    }
+                    return null;
+                }
+            });
+        } catch (Exception e) {
+            // 保持和原来的签名一致：网络类问题原样抛，界面自己认
+            if (e instanceof IOException) throw (IOException) e;
+            if (e instanceof GitAPIException) throw (GitAPIException) e;
+            throw new IOException(String.valueOf(e.getMessage()));
         }
         String local = headId();
         String remote;
@@ -486,20 +511,99 @@ public final class GitRepo {
     }
 
     /** 直接把项目克隆成一个新仓库。 */
-    public static void cloneInto(File dir, String url, String token) throws IOException, GitAPIException {
-        if (dir.exists() && dir.listFiles() != null && dir.listFiles().length > 0) {
-            throw new IOException("目标文件夹不是空的");
+    public static void cloneInto(final File dir, final String url, final String token)
+            throws IOException, GitAPIException {
+        try {
+            withRetry(new Attempt<Void>() {
+                @Override public Void run() throws Exception {
+                    // 上一次失败的残留要清掉，否则第二次会因为目录非空直接失败
+                    if (dir.exists()) deleteRecursive(dir);
+                    if (!dir.mkdirs() && !dir.isDirectory()) {
+                        throw new IOException("无法创建文件夹：" + dir.getAbsolutePath());
+                    }
+                    try (Git git = Git.cloneRepository()
+                            .setURI(url)
+                            .setDirectory(dir)
+                            .setTimeout(NET_TIMEOUT_SECONDS)
+                            .setCredentialsProvider(credentials(token))
+                            .setCloneAllBranches(true)
+                            .call()) {
+                        // 关掉即完成；cloned repo 的 origin 已经配好
+                    }
+                    return null;
+                }
+            });
+        } catch (Exception e) {
+            try {
+                deleteRecursive(dir);
+            } catch (Exception ignored) {
+            }
+            if (e instanceof IOException) throw (IOException) e;
+            if (e instanceof GitAPIException) throw (GitAPIException) e;
+            throw new IOException(String.valueOf(e.getMessage()));
         }
-        if (!dir.mkdirs() && !dir.isDirectory()) {
-            throw new IOException("无法创建文件夹：" + dir.getAbsolutePath());
+    }
+
+    private static void deleteRecursive(File f) {
+        if (f == null || !f.exists()) return;
+        File[] children = f.listFiles();
+        if (children != null) {
+            for (File c : children) deleteRecursive(c);
         }
-        try (Git git = Git.cloneRepository()
-                .setURI(url)
-                .setDirectory(dir)
-                .setCredentialsProvider(credentials(token))
-                .setCloneAllBranches(true)
-                .call()) {
-            // 关掉即完成；cloned repo 的 origin 已经配好
+        //noinspection ResultOfMethodCallIgnored
+        f.delete();
+    }
+
+    /** 只把远端的东西取下来，不动工作区。 */
+    public void fetchRemote(String token) throws IOException, GitAPIException {
+        if (!hasRemote()) throw new IOException("还没有关联远端仓库");
+        try {
+            withRetry(new Attempt<Void>() {
+                @Override public Void run() throws Exception {
+                    try (Git git = new Git(open())) {
+                        git.fetch()
+                                .setRemote("origin")
+                                .setTimeout(NET_TIMEOUT_SECONDS)
+                                .setCredentialsProvider(credentials(token))
+                                .setTagOpt(org.eclipse.jgit.transport.TagOpt.FETCH_TAGS)
+                                .call();
+                    }
+                    return null;
+                }
+            });
+        } catch (Exception e) {
+            if (e instanceof IOException) throw (IOException) e;
+            if (e instanceof GitAPIException) throw (GitAPIException) e;
+            throw new IOException(String.valueOf(e.getMessage()));
+        }
+    }
+
+    /** 远端分支上的提交（fetch 之后才有内容），新的在前。 */
+    public List<CommitInfo> remoteCommits(int max) {
+        List<CommitInfo> out = new ArrayList<>();
+        if (!exists()) return out;
+        try (Repository repo = open(); RevWalk rw = new RevWalk(repo)) {
+            ObjectId id = repo.resolve("refs/remotes/origin/" + branch());
+            if (id == null) return out;
+            rw.markStart(rw.parseCommit(id));
+            int n = 0;
+            for (RevCommit c : rw) {
+                if (n++ >= max) break;
+                out.add(new CommitInfo(c.getName(), c.getFullMessage(), c.getCommitTime() * 1000L));
+            }
+        } catch (Exception ignored) {
+        }
+        return out;
+    }
+
+    /** 远端分支当前指向的提交；没 fetch 过或没有该分支时返回 null。 */
+    public String remoteHeadId() {
+        if (!exists()) return null;
+        try (Repository repo = open()) {
+            ObjectId id = repo.resolve("refs/remotes/origin/" + branch());
+            return id == null ? null : id.getName();
+        } catch (Exception e) {
+            return null;
         }
     }
 
@@ -507,6 +611,67 @@ public final class GitRepo {
     public void pushTo(String url, String token) throws IOException, GitAPIException {
         setRemote(url);
         push(token);
+    }
+
+    /** 网络操作重试次数：GitHub 的 HTTPS 会偶发被重置，第一次失败就放弃太亏。 */
+    private static final int NET_RETRY = 3;
+    /** 单次网络操作的超时（秒）。不设的话连不通会一直挂着。 */
+    private static final int NET_TIMEOUT_SECONDS = 30;
+
+    private interface Attempt<T> {
+        T run() throws Exception;
+    }
+
+    /**
+     * 跑一次网络操作，失败就退避重试。
+     *
+     * 认证类错误重试也没用，直接抛出来；
+     * 其它（连接重置、超时）重试几次往往就过了。
+     */
+    private static <T> T withRetry(Attempt<T> attempt) throws Exception {
+        Exception last = null;
+        for (int i = 1; i <= NET_RETRY; i++) {
+            try {
+                return attempt.run();
+            } catch (Exception e) {
+                last = e;
+                if (!isTransient(e)) throw e;
+                // 认证错误、仓库不存在这类重试也没意义，直接抛
+                if (i < NET_RETRY && isTransient(e)) {
+                    try {
+                        Thread.sleep(1200L * i);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw e;
+                    }
+                }
+            }
+        }
+        throw last;
+    }
+
+    /** 是不是「重试一下可能就好了」的错误（连接被重置、超时这类）。 */
+    private static boolean isTransient(Throwable e) {
+        Throwable cur = e;
+        int guard = 0;
+        while (cur != null && guard++ < 8) {
+            String msg = String.valueOf(cur.getMessage() == null ? "" : cur.getMessage())
+                    .toLowerCase();
+            if (msg.contains("connection") || msg.contains("timeout") || msg.contains("timed out")
+                    || msg.contains("socket") || msg.contains("unable to resolve")
+                    || msg.contains("unknownhost") || msg.contains("reset")
+                    || msg.contains("broken pipe") || msg.contains("eofexception")) {
+                return true;
+            }
+            // 底层是 SocketException / ConnectException / UnknownHostException 都算
+            String cls = cur.getClass().getSimpleName().toLowerCase();
+            if (cls.contains("socket") || cls.contains("connect") || cls.contains("unknownhost")
+                    || cls.contains("sockettimeout")) {
+                return true;
+            }
+            cur = cur.getCause();
+        }
+        return false;
     }
 
     public static CredentialsProvider credentials(String token) {
