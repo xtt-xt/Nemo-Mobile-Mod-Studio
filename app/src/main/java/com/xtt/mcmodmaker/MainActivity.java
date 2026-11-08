@@ -450,13 +450,6 @@ public class MainActivity extends Activity {
         input.setLayoutParams(lp);
         box.addView(input);
 
-        OreTextView note = new OreTextView(this);
-        note.setText("用 Android Keystore 加密存在应用内部目录，别的应用读不到");
-        note.setTextColor(Color.parseColor("#7A7A7A"));
-        note.setTextSize(10);
-        note.setPadding(0, UiUtils.dp(this, 8), 0, 0);
-        box.addView(note);
-
         OreDialogBuilder builder = new OreDialogBuilder(this);
         builder.setTitle("GitHub 令牌");
         builder.setView(box);
@@ -554,13 +547,6 @@ public class MainActivity extends Activity {
         lp.topMargin = UiUtils.dp(this, 8);
         emailInput.setLayoutParams(lp);
         box.addView(emailInput);
-
-        OreTextView tip = new OreTextView(this);
-        tip.setText("存在 McMod/setting.json，只影响以后新产生的版本记录");
-        tip.setTextColor(Color.parseColor("#9A9A9A"));
-        tip.setTextSize(10);
-        tip.setPadding(0, UiUtils.dp(this, 8), 0, 0);
-        box.addView(tip);
 
         OreDialogBuilder builder = new OreDialogBuilder(this);
         builder.setTitle("提交身份");
@@ -1137,15 +1123,8 @@ public class MainActivity extends Activity {
         contentLayout.addView(settingButton("重命名", StyleSheet.STYLE_WHITE, new View.OnClickListener() {
             @Override public void onClick(View v) { showRenameDialog(projectDir); }
         }));
-        UiUtils.addGap(this, contentLayout, 8);
-        contentLayout.addView(settingButton("存一个版本", StyleSheet.STYLE_DARK_GRAY, new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                Intent intent = new Intent(MainActivity.this, VcsActivity.class);
-                intent.putExtra(VcsActivity.EXTRA_PROJECT_PATH, projectDir.getAbsolutePath());
-                startActivity(intent);
-            }
-        }));
-        UiUtils.addGap(this, contentLayout, 8);
+        // 上面是改项目本身的信息，下面是对整个文件夹的操作，中间留大一点的空隙分开
+        UiUtils.addGap(this, contentLayout, UiUtils.dp(this, 14));
         contentLayout.addView(settingButton("打开文件夹", StyleSheet.STYLE_GREEN, new View.OnClickListener() {
             @Override public void onClick(View v) { openProjectFolder(projectDir); }
         }));
@@ -1340,30 +1319,84 @@ public class MainActivity extends Activity {
         builder.show();
     }
 
+    /**
+     * 用别的应用打开项目文件夹。
+     *
+     * 原来的写法把 file:// 换成 content:// 之后配 "application/x-directory"，
+     * 大多数文件管理器不认这个类型，点下去只会弹「没有应用可执行此操作」。
+     * 现在优先走系统文件管理器的存储提供者：它认 primary: 开头的文档 id，
+     * 能直接定位到目录本身（不是只定位到外部存储根目录）。
+     */
     private void openProjectFolder(File projectDir) {
+        if (projectDir == null || !projectDir.exists()) {
+            UiUtils.toast(this, "文件夹已不存在");
+            return;
+        }
+
+        // 1) 系统文件管理器（ExternalStorageProvider）：能精确打开这个子目录
+        String docId = externalStorageDocId(projectDir);
+        if (docId != null) {
+            try {
+                Uri uri = android.provider.DocumentsContract.buildDocumentUri(
+                        "com.android.externalstorage.documents", docId);
+                Intent intent = new Intent(Intent.ACTION_VIEW);
+                intent.setDataAndType(uri, android.provider.DocumentsContract.Document.MIME_TYPE_DIR);
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivity(intent);
+                return;
+            } catch (Exception e) {
+                LogUtil.log("打开文件夹（系统文件管理器）失败：" + e.getMessage());
+            }
+        }
+
+        // 2) 第三方文件管理器常见的目录类型
+        try {
+            Uri uri = getUriForFile(projectDir);
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(uri, "resource/folder");
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(intent);
+            return;
+        } catch (Exception e) {
+            LogUtil.log("打开文件夹（resource/folder）失败：" + e.getMessage());
+        }
+
+        // 3) 最后再试一次 x-directory，有些老文件管理器只认这个
         try {
             Uri uri = getUriForFile(projectDir);
             Intent intent = new Intent(Intent.ACTION_VIEW);
             intent.setDataAndType(uri, "application/x-directory");
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             startActivity(intent);
+            return;
         } catch (Exception e) {
-            try {
-                Uri uri = getUriForFile(projectDir);
-                Intent intent = new Intent(Intent.ACTION_VIEW);
-                intent.setDataAndType(uri, "resource/folder");
-                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                startActivity(intent);
-            } catch (Exception e2) {
-                UiUtils.toast(this, "没有可用的文件管理器");
-            }
+            LogUtil.log("打开文件夹（x-directory）失败：" + e.getMessage());
+        }
+
+        UiUtils.toast(this, "没有能打开文件夹的应用");
+    }
+
+    /**
+     * 把 /storage/emulated/0/xxx 换成系统文件管理器的文档 id（primary:xxx）。
+     * 不在主外部存储里时返回 null。
+     */
+    private String externalStorageDocId(File dir) {
+        try {
+            String root = android.os.Environment.getExternalStorageDirectory().getAbsolutePath();
+            String path = dir.getAbsolutePath();
+            if (!path.startsWith(root)) return null;
+            String rel = path.substring(root.length());
+            while (rel.startsWith("/")) rel = rel.substring(1);
+            return rel.isEmpty() ? "primary:" : "primary:" + rel;
+        } catch (Exception e) {
+            return null;
         }
     }
 
     private Uri getUriForFile(File file) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             return androidx.core.content.FileProvider.getUriForFile(
-                    this, Constants.FILE_PROVIDER_AUTHORITY, file);
+                    this, Constants.fileProviderAuthority(this), file);
         }
         return Uri.fromFile(file);
     }
@@ -1523,7 +1556,7 @@ public class MainActivity extends Activity {
                         throw new IOException("平台返回登录错误，请重新登录");
                     }
                     final Uri zipUri = androidx.core.content.FileProvider.getUriForFile(
-                            MainActivity.this, Constants.FILE_PROVIDER_AUTHORITY, zipFile);
+                            MainActivity.this, Constants.fileProviderAuthority(MainActivity.this), zipFile);
                     UiUtils.runOnUiThread(new Runnable() {
                         @Override public void run() {
                             showImportProgress(false);

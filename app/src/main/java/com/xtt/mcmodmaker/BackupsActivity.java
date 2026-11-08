@@ -390,7 +390,7 @@ public class BackupsActivity extends Activity {
         Uri uri;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             uri = androidx.core.content.FileProvider.getUriForFile(
-                    this, Constants.FILE_PROVIDER_AUTHORITY, folder);
+                    this, Constants.fileProviderAuthority(this), folder);
         } else {
             uri = Uri.fromFile(folder);
         }

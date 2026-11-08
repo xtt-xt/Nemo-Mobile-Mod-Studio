@@ -15,8 +15,16 @@ public final class Constants {
     /** WebView 下载保存目录。 */
     public static final String DOWNLOAD_DIR = MOD_FOLDER_PATH + "/Download";
 
-    /** FileProvider authority。 */
-    public static final String FILE_PROVIDER_AUTHORITY = "com.xtt.mcmodmaker.fileprovider";
+    /**
+     * FileProvider authority。
+     *
+     * 清单里写的是 ${applicationId}.fileprovider，fast 变体的包名带 .fast 后缀，
+     * 所以不能写死：写死的那份在 fast 包里对不上，getUriForFile 会直接抛异常，
+     * 表现为「打不开文件夹 / 分享不出去」。
+     */
+    public static String fileProviderAuthority(android.content.Context context) {
+        return context.getPackageName() + ".fileprovider";
+    }
 
     public static final String GITHUB_API_LATEST =
             "https://api.github.com/repos/xtt-xt/Nemo-Mobile-Mod-Studio/releases/latest";
