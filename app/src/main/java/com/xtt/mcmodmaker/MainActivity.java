@@ -38,6 +38,7 @@ import com.xtt.mcmodmaker.net.DevAuth;
 import com.xtt.mcmodmaker.net.McDevApi;
 import com.xtt.mcmodmaker.core.Constants;
 import com.xtt.mcmodmaker.core.GitWorkspace;
+import com.xtt.mcmodmaker.net.GitAuth;
 import com.xtt.mcmodmaker.core.ProjectManager;
 import com.xtt.mcmodmaker.core.UpdateChecker;
 import com.xtt.mcmodmaker.util.DateUtils;
@@ -415,6 +416,75 @@ public class MainActivity extends Activity {
                 android.R.drawable.ic_menu_myplaces, new View.OnClickListener() {
                     @Override public void onClick(View v) { showIdentityDialog(); }
                 }));
+        // GitHub 令牌（克隆 / 推送用，加密存在应用内部目录）
+        aboutContainer.addView(actionCard("GitHub 令牌",
+                GitAuth.hasToken(this) ? "已保存，点此修改或清除" : "从 GitHub 克隆模组、推送远端时用",
+                android.R.drawable.ic_lock_lock, new View.OnClickListener() {
+                    @Override public void onClick(View v) { showTokenDialog(); }
+                }));
+    }
+
+    /** GitHub 个人访问令牌：加密存在应用内部目录，不落 setting.json。 */
+    private void showTokenDialog() {
+        final boolean hasToken = GitAuth.hasToken(this);
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = UiUtils.dp(this, 8);
+        box.setPadding(pad, pad, pad, pad);
+
+        OreTextView tip = new OreTextView(this);
+        tip.setText(hasToken
+                ? "已保存一个令牌。修改时留空表示不动它。"
+                : "在 GitHub 网页版 Settings → Developer settings → Personal access tokens 里生成，勾 repo 权限");
+        tip.setTextColor(Color.parseColor("#9A9A9A"));
+        tip.setTextSize(10);
+        box.addView(tip);
+
+        final OreEditText input = new OreEditText(this);
+        input.setHint(hasToken ? "留空则不修改" : "ghp_… 或 github_pat_…");
+        input.setSingleLine(true);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = UiUtils.dp(this, 8);
+        input.setLayoutParams(lp);
+        box.addView(input);
+
+        OreTextView note = new OreTextView(this);
+        note.setText("用 Android Keystore 加密存在应用内部目录，别的应用读不到");
+        note.setTextColor(Color.parseColor("#7A7A7A"));
+        note.setTextSize(10);
+        note.setPadding(0, UiUtils.dp(this, 8), 0, 0);
+        box.addView(note);
+
+        OreDialogBuilder builder = new OreDialogBuilder(this);
+        builder.setTitle("GitHub 令牌");
+        builder.setView(box);
+        builder.setPositiveButton("保存", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                String token = input.getText().toString().trim();
+                if (!token.isEmpty()) {
+                    GitAuth.save(MainActivity.this, token);
+                    UiUtils.toast(MainActivity.this, "令牌已保存");
+                }
+                dialog.dismiss();
+                if (hasToken) showSettingsPage();
+            }
+        });
+        builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
+        });
+        if (hasToken) {
+            builder.addButton("清除已保存的令牌", StyleSheet.STYLE_RED, new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) {
+                    GitAuth.clear(MainActivity.this);
+                    UiUtils.toast(MainActivity.this, "令牌已清除");
+                    dialog.dismiss();
+                    showSettingsPage();
+                }
+            });
+        }
+        builder.show();
     }
 
     /** 和设置页入口同构、但点了执行动作而不是跳页面的卡片。 */
@@ -486,7 +556,7 @@ public class MainActivity extends Activity {
         box.addView(emailInput);
 
         OreTextView tip = new OreTextView(this);
-        tip.setText("只影响以后新产生的版本记录");
+        tip.setText("存在 McMod/setting.json，只影响以后新产生的版本记录");
         tip.setTextColor(Color.parseColor("#9A9A9A"));
         tip.setTextSize(10);
         tip.setPadding(0, UiUtils.dp(this, 8), 0, 0);
