@@ -1119,7 +1119,7 @@ public class MainActivity extends Activity {
         builder.setTitle("项目设置");
         builder.setView(contentLayout);
         builder.setButtonOrientation(LinearLayout.VERTICAL);
-        builder.addButton("修改命名空间", StyleSheet.STYLE_DARK_GRAY, new DialogInterface.OnClickListener() {
+        builder.addButton("修改命名空间", StyleSheet.STYLE_WHITE, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface dialog, int which) {
                 dialog.dismiss();
                 showNamespaceDialog(projectDir, currentNamespace);
@@ -1143,10 +1143,11 @@ public class MainActivity extends Activity {
                 showDeleteConfirm(projectDir);
             }
         });
-        builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+        // 取消用 addButton：setNegativeButton 会被排到所有 addButton 前面，
+        // 变成列表第一行；这样放才能像别的弹窗一样落在最后
+        builder.addButton("取消", null, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
         });
-        builder.getNegativeButton().setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
         builder.show();
     }
 
