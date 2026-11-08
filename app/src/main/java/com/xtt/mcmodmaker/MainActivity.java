@@ -1320,117 +1320,16 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 用别的应用打开项目文件夹。
+     * 用别的应用打开项目文件夹：交给系统选择器。
      *
-     * 直接 ACTION_VIEW 交给系统的话，选择器里会混进音乐播放器、视频剪辑这些
-     * 只为通配类型注册的应用，看着很不靠谱。这里先自己列一份「真的能打开目录」的
-     * 应用（MT 管理器有直达目录的接口、系统文件管理器认存储文档），
-     * 剩下的才交给系统选择器。
+     * 类型用 application/x-directory —— 目录在 Android 上就这一种通用类型，
+     * 只认这个类型、并且声明 support 目录的应用才会出现在列表里。
      */
-    private void openProjectFolder(final File projectDir) {
+    private void openProjectFolder(File projectDir) {
         if (projectDir == null || !projectDir.exists()) {
             UiUtils.toast(this, "文件夹已不存在");
             return;
         }
-
-        final Intent mtIntent = mtLocateIntent(projectDir);
-        final Intent filesIntent = systemFilesIntent(projectDir);
-
-        // 一个都没有就直接交给系统选择器
-        if (mtIntent == null && filesIntent == null) {
-            openWithChooser(projectDir);
-            return;
-        }
-
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        int pad = UiUtils.dp(this, 8);
-        box.setPadding(pad, pad, pad, pad);
-        OreTextView tip = new OreTextView(this);
-        tip.setText(projectDir.getName());
-        tip.setTextColor(Color.parseColor("#9A9A9A"));
-        tip.setTextSize(10);
-        tip.setMaxLines(2);
-        box.addView(tip);
-
-        OreDialogBuilder builder = new OreDialogBuilder(this);
-        builder.setTitle("打开文件夹");
-        builder.setView(box);
-        builder.setButtonOrientation(LinearLayout.VERTICAL);
-        if (mtIntent != null) {
-            builder.addButton("MT 管理器", StyleSheet.STYLE_GREEN, new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) {
-                    dialog.dismiss();
-                    launchOrFallback(mtIntent, projectDir);
-                }
-            });
-        }
-        if (filesIntent != null) {
-            builder.addButton("系统文件管理器", StyleSheet.STYLE_WHITE, new DialogInterface.OnClickListener() {
-                @Override public void onClick(DialogInterface dialog, int which) {
-                    dialog.dismiss();
-                    launchOrFallback(filesIntent, projectDir);
-                }
-            });
-        }
-        builder.addButton("其他应用…", StyleSheet.STYLE_DARK_GRAY, new DialogInterface.OnClickListener() {
-            @Override public void onClick(DialogInterface dialog, int which) {
-                dialog.dismiss();
-                openWithChooser(projectDir);
-            }
-        });
-        builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
-            @Override public void onClick(DialogInterface dialog, int which) { dialog.dismiss(); }
-        });
-        builder.getNegativeButton().setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
-        builder.show();
-    }
-
-    /** 起一个 intent；起不来就退回系统选择器，别让用户点了没反应。 */
-    private void launchOrFallback(Intent intent, File projectDir) {
-        try {
-            startActivity(intent);
-        } catch (Exception e) {
-            LogUtil.log("打开文件夹失败：" + e.getMessage());
-            openWithChooser(projectDir);
-        }
-    }
-
-    /** MT 管理器的「定位到目录」入口，没装 MT 时返回 null。 */
-    private Intent mtLocateIntent(File dir) {
-        try {
-            Intent intent = new Intent("bin.mt.plus.ACTION_SHORTCUT");
-            intent.setComponent(new android.content.ComponentName(
-                    "bin.mt.plus", "bin.mt.plus.ShortcutActivity"));
-            intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_WHEN_TASK_RESET);
-            intent.putExtra("operation", "locate");
-            intent.putExtra("path", dir.getAbsolutePath() + "/");
-            if (intent.resolveActivity(getPackageManager()) == null) return null;
-            return intent;
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    /** 系统文件管理器打开这个目录，认不了时返回 null。 */
-    private Intent systemFilesIntent(File dir) {
-        String docId = externalStorageDocId(dir);
-        if (docId == null) return null;
-        try {
-            Uri uri = android.provider.DocumentsContract.buildDocumentUri(
-                    "com.android.externalstorage.documents", docId);
-            Intent intent = new Intent(Intent.ACTION_VIEW);
-            intent.setDataAndType(uri, android.provider.DocumentsContract.Document.MIME_TYPE_DIR);
-            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            if (intent.resolveActivity(getPackageManager()) == null) return null;
-            return intent;
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    /** 其余能处理目录的应用，交给系统选择器。 */
-    private void openWithChooser(File projectDir) {
         try {
             Uri uri = getUriForFile(projectDir);
             Intent intent = new Intent(Intent.ACTION_VIEW);
@@ -1438,25 +1337,8 @@ public class MainActivity extends Activity {
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             startActivity(Intent.createChooser(intent, "打开文件夹"));
         } catch (Exception e) {
-            LogUtil.log("用其他应用打开文件夹失败：" + e.getMessage());
+            LogUtil.log("打开文件夹失败：" + e.getMessage());
             UiUtils.toast(this, "没有能打开文件夹的应用");
-        }
-    }
-
-    /**
-     * 把 /storage/emulated/0/xxx 换成系统文件管理器的文档 id（primary:xxx）。
-     * 不在主外部存储里时返回 null。
-     */
-    private String externalStorageDocId(File dir) {
-        try {
-            String root = android.os.Environment.getExternalStorageDirectory().getAbsolutePath();
-            String path = dir.getAbsolutePath();
-            if (!path.startsWith(root)) return null;
-            String rel = path.substring(root.length());
-            while (rel.startsWith("/")) rel = rel.substring(1);
-            return rel.isEmpty() ? "primary:" : "primary:" + rel;
-        } catch (Exception e) {
-            return null;
         }
     }
 
