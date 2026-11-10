@@ -217,10 +217,9 @@ public class ProjectManager {
             for (DocumentFile child : children) {
                 String name = child.getName();
                 if (name == null) continue;
-                String lower = name.toLowerCase();
-                if (lower.startsWith("behavior_pack_") || lower.startsWith("behaviour_pack_")) {
+                if (StudioConfig.isBehaviorPack(name)) {
                     hasBehavior = true;
-                } else if (lower.startsWith("resource_pack_")) {
+                } else if (StudioConfig.isResourcePack(name)) {
                     hasResource = true;
                 }
             }
@@ -403,25 +402,24 @@ public class ProjectManager {
         File[] entries = tempDir.listFiles();
         if (entries == null) throw new IOException("ZIP 内容为空");
 
-        File behPack = null;
-        File resPack = null;
+        // 带不带随机后缀都算；同时有好几个时取有 manifest.json 的那个
+        java.util.List<File> behPacks = StudioConfig.packs(tempDir, true);
+        java.util.List<File> resPacks = StudioConfig.packs(tempDir, false);
         File studioJson = null;
         File workMcscfg = null;
         for (File entry : entries) {
             String name = entry.getName().toLowerCase();
-            if (name.startsWith("behavior_pack_") || name.startsWith("behaviour_pack_")) {
-                behPack = entry;
-            } else if (name.startsWith("resource_pack_")) {
-                resPack = entry;
-            } else if (name.equals("studio.json")) {
+            if (name.equals("studio.json")) {
                 studioJson = entry;
             } else if (name.equals("work.mcscfg")) {
                 workMcscfg = entry;
             }
         }
-        if (behPack == null || resPack == null) {
+        if (behPacks.isEmpty() || resPacks.isEmpty()) {
             throw new IOException("ZIP包必须包含behavior_pack和resource_pack文件夹");
         }
+        File behPack = behPacks.get(0);
+        File resPack = resPacks.get(0);
 
         targetProjectDir.mkdirs();
         FileUtils.moveFile(behPack, new File(targetProjectDir, behPack.getName()));
@@ -436,15 +434,16 @@ public class ProjectManager {
         File[] entries = projectDir.listFiles();
         if (entries == null) return;
         for (File entry : entries) {
+            if (!entry.isDirectory()) continue;
             String name = entry.getName();
-            if (entry.isDirectory() && name.startsWith("behavior_pack_")) {
+            if (StudioConfig.isBehaviorPack(name)) {
                 File entitiesDir = new File(entry, "entities");
                 if (!entitiesDir.exists()) entitiesDir.mkdirs();
                 File manifestFile = new File(entry, "manifest.json");
                 if (!manifestFile.exists()) {
                     FileUtils.writeTextQuietly(manifestFile, ModTemplates.packManifest("data"));
                 }
-            } else if (entry.isDirectory() && name.startsWith("resource_pack_")) {
+            } else if (StudioConfig.isResourcePack(name)) {
                 File texturesDir = new File(entry, "textures");
                 if (!texturesDir.exists()) texturesDir.mkdirs();
                 File manifestFile = new File(entry, "manifest.json");

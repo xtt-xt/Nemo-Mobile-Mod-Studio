@@ -17,6 +17,7 @@ import android.widget.ScrollView;
 
 import com.xtt.mcmodmaker.core.GitRepo;
 import com.xtt.mcmodmaker.core.GitWorkspace;
+import com.xtt.mcmodmaker.core.StudioConfig;
 import com.xtt.mcmodmaker.net.GitAuth;
 import com.xtt.mcmodmaker.util.DateUtils;
 import com.xtt.mcmodmaker.util.JsonUtils;
@@ -905,6 +906,7 @@ public class VcsActivity extends Activity {
         executor.execute(new Runnable() {
             @Override public void run() {
                 String error = null;
+                int fill = FILL_SKIP;
                 try {
                     if (byRemote) {
                         repo.commitIfChanged(GitWorkspace.autoMessage(System.currentTimeMillis()));
@@ -912,16 +914,122 @@ public class VcsActivity extends Activity {
                                 "拉取覆盖前的本地自动备份");
                     }
                     repo.hardResetTo(remoteCommit);
+                    fill = fillStudioIfMissing();
                 } catch (Exception e) {
                     error = describe(e);
+                    LogUtil.logException(e);
+                }
+                final String err = error;
+                final int needFill = fill;
+                main.post(new Runnable() {
+                    @Override public void run() {
+                        setBusy(false, null);
+                        if (err != null) UiUtils.toast(VcsActivity.this, "拉取失败：" + err);
+                        else UiUtils.toast(VcsActivity.this, "已更新到远端版本");
+                        reload();
+                        if (needFill == FILL_ASK) askStudioConfig();
+                    }
+                });
+            }
+        });
+    }
+
+    // ==================== 补齐 studio.json ====================
+
+    /** 已有 studio.json，什么都不用做。 */
+    private static final int FILL_SKIP = 0;
+    /** 已经按推断出来的命名空间补好了。 */
+    private static final int FILL_DONE = 1;
+    /** 缺 studio.json，而且推断不出命名空间，得问用户。 */
+    private static final int FILL_ASK = 2;
+
+    /**
+     * 工作区刚被换成某个版本，缺 studio.json 就补一份。
+     *
+     * 开源模组仓库一般不提交这个文件，恢复 / 拉取之后就读不到项目名和命名空间了。
+     * 命名空间优先从行为包里 identifier 的前缀推断，推不出来交给界面问。
+     *
+     * 必须在后台线程调用（要读一堆 json，还要提交）。
+     */
+    private int fillStudioIfMissing() {
+        if (StudioConfig.hasStudio(projectDir)) return FILL_SKIP;
+        String ns = StudioConfig.guessNamespace(projectDir);
+        if (ns != null && !ns.isEmpty()) {
+            try {
+                StudioConfig.writeStudio(projectDir, JsonUtils.getProjectName(projectDir), ns);
+                repo.commitIfChanged("补齐项目配置");
+                return FILL_DONE;
+            } catch (Exception e) {
+                LogUtil.logException(e);
+            }
+        }
+        return FILL_ASK;
+    }
+
+    /** 命名空间推断不出来时问一次。 */
+    private void askStudioConfig() {
+        if (isFinishing()) return;
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = UiUtils.dp(this, 8);
+        box.setPadding(pad, pad, pad, pad);
+
+        final OreEditText nameInput = new OreEditText(this);
+        nameInput.setHint("项目名称");
+        nameInput.setSingleLine(true);
+        nameInput.setText(JsonUtils.getProjectName(projectDir));
+        box.addView(nameInput);
+
+        UiUtils.addGap(this, box, UiUtils.dp(this, 8));
+
+        final OreEditText nsInput = new OreEditText(this);
+        nsInput.setHint("命名空间，例如 reinforced_glass");
+        nsInput.setSingleLine(true);
+        box.addView(nsInput);
+
+        OreDialogBuilder b = new OreDialogBuilder(this);
+        b.setTitle("补齐项目配置");
+        b.setView(box);
+        b.setPositiveButton("保存", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                final String name = nameInput.getText().toString().trim();
+                final String ns = nsInput.getText().toString().trim();
+                d.dismiss();
+                if (ns.isEmpty()) {
+                    UiUtils.toast(VcsActivity.this, "命名空间不能为空");
+                    return;
+                }
+                saveStudio(name, ns);
+            }
+        });
+        b.getPositiveButton().setStyleSheet(StyleSheet.STYLE_GREEN);
+        b.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) { d.dismiss(); }
+        });
+        b.getNegativeButton().setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+        b.show();
+    }
+
+    private void saveStudio(final String name, final String namespace) {
+        setBusy(true, "正在补齐项目配置…");
+        executor.execute(new Runnable() {
+            @Override public void run() {
+                String error = null;
+                try {
+                    repo.ensureInit("初始提交");
+                    StudioConfig.writeStudio(projectDir, name, namespace);
+                    repo.commitIfChanged("补齐项目配置");
+                } catch (Exception e) {
+                    error = String.valueOf(e.getMessage());
                     LogUtil.logException(e);
                 }
                 final String err = error;
                 main.post(new Runnable() {
                     @Override public void run() {
                         setBusy(false, null);
-                        if (err != null) UiUtils.toast(VcsActivity.this, "拉取失败：" + err);
-                        else UiUtils.toast(VcsActivity.this, "已更新到远端版本");
+                        if (err != null) UiUtils.toast(VcsActivity.this, "补齐失败：" + err);
+                        else UiUtils.toast(VcsActivity.this, "已补齐 studio.json");
                         reload();
                     }
                 });
@@ -1249,6 +1357,7 @@ public class VcsActivity extends Activity {
             @Override public void run() {
                 String error = null;
                 boolean same = false;
+                int fill = FILL_SKIP;
                 try {
                     repo.ensureInit("初始提交");
                     // 没落盘的手改先记下来，免得恢复动作把眼前这版弄丢
@@ -1256,12 +1365,15 @@ public class VcsActivity extends Activity {
                     GitRepo.CommitInfo c = repo.restore(commitId, "恢复到 " + label,
                             "restore-before", "恢复「" + label + "」前的自动备份");
                     same = c == null;
+                    // 目标版本里可能没有 studio.json（从 GitHub 来的开源模组就是这样）
+                    fill = fillStudioIfMissing();
                 } catch (Exception e) {
                     error = String.valueOf(e.getMessage());
                     LogUtil.logException(e);
                 }
                 final String err = error;
                 final boolean unchanged = same;
+                final int needFill = fill;
                 main.post(new Runnable() {
                     @Override public void run() {
                         setBusy(false, null);
@@ -1269,6 +1381,7 @@ public class VcsActivity extends Activity {
                         else if (unchanged) UiUtils.toast(VcsActivity.this, "这就是当前版本");
                         else UiUtils.toast(VcsActivity.this, "已恢复到 " + label);
                         reload();
+                        if (needFill == FILL_ASK) askStudioConfig();
                     }
                 });
             }

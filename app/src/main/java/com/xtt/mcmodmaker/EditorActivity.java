@@ -37,6 +37,7 @@ import com.xtt.mcmodmaker.core.GitWorkspace;
 import com.xtt.mcmodmaker.core.ItemRegistry;
 import com.xtt.mcmodmaker.core.ModTemplates;
 import com.xtt.mcmodmaker.core.ProjectManager;
+import com.xtt.mcmodmaker.core.StudioConfig;
 import com.xtt.mcmodmaker.editor.FileNode;
 import com.xtt.mcmodmaker.editor.RecipeEditor;
 import com.xtt.mcmodmaker.editor.SimpleSyntaxLanguage;
@@ -676,12 +677,9 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
     // ==================== 目录查找 ====================
 
     private File findPackDir(String prefix) {
-        File[] rootFiles = projectDir.listFiles();
-        if (rootFiles == null) return null;
-        for (File f : rootFiles) {
-            if (f.isDirectory() && f.getName().toLowerCase().startsWith(prefix)) return f;
-        }
-        return null;
+        // 带不带随机后缀都认；同时存在两份时以有 manifest.json 的那份为准
+        boolean behavior = prefix != null && prefix.toLowerCase().startsWith("behav");
+        return StudioConfig.findPack(projectDir, behavior);
     }
 
     private File findScriptDir() {
@@ -1189,12 +1187,11 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
 
         if (rootFiles != null) {
             for (File f : rootFiles) {
-                String name = f.getName().toLowerCase();
-                if (category.equals("行为包") && f.isDirectory()
-                        && (name.startsWith("behavior_pack_") || name.startsWith("behaviour_pack_"))) {
+                if (!f.isDirectory()) continue;
+                if (category.equals("行为包") && StudioConfig.isBehaviorPack(f.getName())) {
                     targetDir = f;
                     break;
-                } else if (category.equals("资源包") && f.isDirectory() && name.startsWith("resource_pack_")) {
+                } else if (category.equals("资源包") && StudioConfig.isResourcePack(f.getName())) {
                     targetDir = f;
                     break;
                 }
@@ -1205,17 +1202,15 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
             targetDir = findTexturesDir();
         } else if ("清单文件".equals(category)) {
             middleContainer.removeAllViews();
-            if (rootFiles != null) {
-                for (File f : rootFiles) {
-                    String name = f.getName().toLowerCase();
-                    if (f.isDirectory() && name.startsWith("behavior_pack_")) {
-                        showSpecificFile(new File(f, "manifest.json"), "行为包 manifest.json");
-                    } else if (f.isDirectory() && name.startsWith("resource_pack_")) {
-                        showSpecificFile(new File(f, "manifest.json"), "资源包 manifest.json");
-                    }
-                }
-                showSpecificFile(new File(projectDir, "studio.json"), "工作室配置");
+            File behDir = findPackDir("behavior_pack_");
+            File resDir = findPackDir("resource_pack_");
+            if (behDir != null) {
+                showSpecificFile(new File(behDir, "manifest.json"), "行为包 manifest.json");
             }
+            if (resDir != null) {
+                showSpecificFile(new File(resDir, "manifest.json"), "资源包 manifest.json");
+            }
+            showSpecificFile(new File(projectDir, "studio.json"), "工作室配置");
             return;
         } else if ("配置".equals(category)) {
             middleContainer.removeAllViews();
@@ -1482,12 +1477,117 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
         gitExecutor.execute(new Runnable() {
             @Override public void run() {
                 try {
-                    GitWorkspace.repo(EditorActivity.this, projectDir).ensureInit("初始提交");
+                    GitRepo repo = GitWorkspace.repo(EditorActivity.this, projectDir);
+                    repo.ensureInit("初始提交");
+                    ensureStudioConfig(repo);
                 } catch (Exception e) {
                     LogUtil.logException(e);
                 }
             }
         });
+    }
+
+    /**
+     * 缺 studio.json 就补一份。
+     *
+     * 从 GitHub 克隆下来的开源模组通常没有它，缺了就读不到项目名和命名空间，
+     * 配方、自定义物品的 identifier 都会跟着错。命名空间先从行为包里的 identifier 推断，
+     * 推断不出来再问用户。
+     *
+     * 在后台线程调用。
+     */
+    private void ensureStudioConfig(final GitRepo repo) {
+        if (StudioConfig.hasStudio(projectDir)) return;
+        String ns = StudioConfig.guessNamespace(projectDir);
+        if (ns != null && !ns.isEmpty()) {
+            try {
+                StudioConfig.writeStudio(projectDir, projectDir.getName(), ns);
+                repo.commitIfChanged("补齐项目配置");
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        // 文件树里现在多了 studio.json，重新扫一遍
+                        rootNode = scanDirectory(projectDir);
+                    }
+                });
+                return;
+            } catch (Exception e) {
+                LogUtil.logException(e);
+            }
+        }
+        runOnUiThread(new Runnable() {
+            @Override public void run() { askStudioConfig(); }
+        });
+    }
+
+    /** 命名空间推断不出来时，问一次项目名和命名空间。 */
+    private void askStudioConfig() {
+        if (isFinishing()) return;
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = UiUtils.dp(this, 8);
+        box.setPadding(pad, pad, pad, pad);
+
+        final OreEditText nameInput = new OreEditText(this);
+        nameInput.setHint("项目名称");
+        nameInput.setSingleLine(true);
+        nameInput.setText(projectDir.getName());
+        box.addView(nameInput);
+
+        UiUtils.addGap(this, box, UiUtils.dp(this, 8));
+
+        final OreEditText nsInput = new OreEditText(this);
+        nsInput.setHint("命名空间，例如 reinforced_glass");
+        nsInput.setSingleLine(true);
+        box.addView(nsInput);
+
+        OreDialogBuilder b = new OreDialogBuilder(this);
+        b.setTitle("补齐项目配置");
+        b.setView(box);
+        b.setPositiveButton("保存", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) {
+                final String name = nameInput.getText().toString().trim();
+                final String ns = nsInput.getText().toString().trim();
+                d.dismiss();
+                if (ns.isEmpty()) {
+                    Toast.makeText(EditorActivity.this, "命名空间不能为空", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                if (gitExecutor == null) initVersionControl();
+                gitExecutor.execute(new Runnable() {
+                    @Override public void run() {
+                        try {
+                            GitRepo repo = GitWorkspace.repo(EditorActivity.this, projectDir);
+                            repo.ensureInit("初始提交");
+                            StudioConfig.writeStudio(projectDir, name, ns);
+                            repo.commitIfChanged("补齐项目配置");
+                            runOnUiThread(new Runnable() {
+                                @Override public void run() {
+                                    rootNode = scanDirectory(projectDir);
+                                    Toast.makeText(EditorActivity.this,
+                                            "已补齐 studio.json", Toast.LENGTH_SHORT).show();
+                                }
+                            });
+                        } catch (Exception e) {
+                            LogUtil.logException(e);
+                            final String msg = String.valueOf(e.getMessage());
+                            runOnUiThread(new Runnable() {
+                                @Override public void run() {
+                                    Toast.makeText(EditorActivity.this,
+                                            "补齐失败：" + msg, Toast.LENGTH_SHORT).show();
+                                }
+                            });
+                        }
+                    }
+                });
+            }
+        });
+        b.getPositiveButton().setStyleSheet(StyleSheet.STYLE_GREEN);
+        b.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) { d.dismiss(); }
+        });
+        b.getNegativeButton().setStyleSheet(StyleSheet.STYLE_DARK_GRAY);
+        b.show();
     }
 
     /** 把当前状态记一次自动保存；没有改动时不会产生空记录。 */
