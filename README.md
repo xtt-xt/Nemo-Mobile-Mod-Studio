@@ -224,7 +224,7 @@ app/src/main/java/com/xtt/mcmodmaker/
 
 <blockquote>
   <p>目前世面上的大部分手机模组制作器都是国际版的，被砍了假日创作者模式后几乎全部用不了。</p>
-  <p>于是我制作了这个软件，大部分代码都是由AI编写，力求还原mc store</p>
+  <p>于是我制作了这个软件，大部分代码都是由AI编写，力求还原mc stuido</p>
   <p>由于我也不是很懂开发模组，所以bug什么的都是难免的，如果有想法可以提Issues</p>
   <p><del>咕咕咕</del></p>
 </blockquote>
