@@ -6,6 +6,7 @@ import org.eclipse.jgit.api.Status;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.PersonIdent;
+import org.eclipse.jgit.lib.ProgressMonitor;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevCommit;
@@ -15,11 +16,13 @@ import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.eclipse.jgit.transport.CredentialsProvider;
+import org.eclipse.jgit.transport.RefSpec;
 
 import java.io.File;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
@@ -77,6 +80,17 @@ public final class GitRepo {
 
         public String shortCommit() {
             return commitId.length() > 8 ? commitId.substring(0, 8) : commitId;
+        }
+    }
+
+    /** 远端有哪些分支，以及它的默认分支（远端 HEAD 指的那条）。 */
+    public static final class RemoteBranches {
+        public final String defaultBranch;
+        public final List<String> branches;
+
+        RemoteBranches(String defaultBranch, List<String> branches) {
+            this.defaultBranch = defaultBranch;
+            this.branches = branches;
         }
     }
 
@@ -381,25 +395,117 @@ public final class GitRepo {
         }
     }
 
-    /** 把 origin 上另一个分支设成本分支的上游（推送第一次要先有它）。 */
-    private void setTracking(String branch) throws IOException {
+    /**
+     * 本地分支对着远端哪条分支。
+     *
+     * 存的是 git 标准的上游配置（branch.<本地>.merge），没配过就当成同名分支。
+     * 本地叫 master、远端默认叫 main 这种对不上的情况由界面让用户自己选，
+     * 这里只负责记住选的结果。
+     */
+    public String upstreamBranch() {
         try (Repository repo = open()) {
-            repo.getConfig().setString("branch", branch, "remote", "origin");
-            repo.getConfig().setString("branch", branch, "merge", "refs/heads/" + branch);
+            String merge = repo.getConfig().getString("branch", branch(), "merge");
+            if (merge != null && merge.startsWith("refs/heads/")) {
+                return merge.substring("refs/heads/".length());
+            }
+        } catch (Exception ignored) {
+        }
+        return branch();
+    }
+
+    /** 有没有手动选过远端分支。 */
+    public boolean hasUpstream() {
+        try (Repository repo = open()) {
+            return repo.getConfig().getString("branch", branch(), "merge") != null;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 记住「本地分支对着远端的哪条分支」。 */
+    public void setUpstream(String remoteBranch) throws IOException {
+        String local = branch();
+        try (Repository repo = open()) {
+            repo.getConfig().setString("branch", local, "remote", "origin");
+            repo.getConfig().setString("branch", local, "merge", "refs/heads/" + remoteBranch);
+            repo.getConfig().save();
+        }
+    }
+
+    /** 解除关联时把上游配置也清掉，免得下次关联别的仓库还用着旧分支名。 */
+    public void clearUpstream() throws IOException {
+        String local = branch();
+        try (Repository repo = open()) {
+            repo.getConfig().unsetSection("branch", local);
             repo.getConfig().save();
         }
     }
 
     /**
-     * 推送：本分支 + 所有版本标签。
+     * 问一下远端有哪些分支、默认分支是哪条。
+     *
+     * 必须问，不能按本地分支名去猜：本地初始化的分支叫 master，
+     * 而远端的默认分支可能叫 main，猜错就会去读一条早就停更的老分支。
+     * 判断办法是拿 HEAD 的提交 id 去对 refs/heads/*，对上哪条哪条就是默认分支。
+     */
+    public RemoteBranches remoteBranches(String token) throws IOException, GitAPIException {
+        if (!hasRemote()) throw new IOException("还没有关联远端仓库");
+        final String url = remoteUrl();
+        Collection<Ref> refs;
+        try {
+            refs = withRetry(new Attempt<Collection<Ref>>() {
+                @Override public Collection<Ref> run() throws Exception {
+                    return Git.lsRemoteRepository()
+                            .setRemote(url)
+                            .setTimeout(NET_TIMEOUT_SECONDS)
+                            .setCredentialsProvider(credentials(token))
+                            .call();
+                }
+            });
+        } catch (Exception e) {
+            if (e instanceof IOException) throw (IOException) e;
+            if (e instanceof GitAPIException) throw (GitAPIException) e;
+            throw new IOException(String.valueOf(e.getMessage()));
+        }
+
+        String headId = null;
+        List<String> branches = new ArrayList<>();
+        for (Ref r : refs) {
+            if ("HEAD".equals(r.getName())) {
+                headId = r.getObjectId() == null ? null : r.getObjectId().name();
+            } else if (r.getName().startsWith("refs/heads/")) {
+                branches.add(r.getName().substring("refs/heads/".length()));
+            }
+        }
+        Collections.sort(branches);
+
+        String def = "";
+        if (headId != null) {
+            for (Ref r : refs) {
+                if (r.getName().startsWith("refs/heads/") && r.getObjectId() != null
+                        && headId.equals(r.getObjectId().name())) {
+                    def = r.getName().substring("refs/heads/".length());
+                    break;
+                }
+            }
+        }
+        if (def.isEmpty() && !branches.isEmpty()) def = branches.get(0);
+        return new RemoteBranches(def, branches);
+    }
+
+    /**
+     * 推送：本地分支推到远端选中的那条分支，外加所有版本标签。
      *
      * 标签也要推，否则「备份」只留在手机上，换台设备就没了。
      * 不强制推送：远端有本地没有的提交时让服务端拒绝，由界面提示先拉取。
+     *
+     * @return 推到的远端分支名
      */
-    public String push(String token) throws IOException, GitAPIException {
+    public String push(String token, Progress progress) throws IOException, GitAPIException {
         if (!hasRemote()) throw new IOException("还没有关联远端仓库");
         if (headId() == null) throw new IOException("仓库里还没有任何版本");
         final String branch = branch();
+        final String upstream = upstreamBranch();
         try {
             withRetry(new Attempt<Void>() {
                 @Override public Void run() throws Exception {
@@ -408,12 +514,12 @@ public final class GitRepo {
                                 .setRemote("origin")
                                 .setTimeout(NET_TIMEOUT_SECONDS)
                                 .setCredentialsProvider(credentials(token))
-                                // 显式写 refspec：分支 + 标签。
+                                .setProgressMonitor(monitor(progress))
+                                // 显式写 refspec：本地分支 → 远端选中的分支 + 标签。
                                 // setPushTags() 和 setRefSpecs() 会互相覆盖，干脆两个都写进列表
-                                .setRefSpecs(new org.eclipse.jgit.transport.RefSpec(
-                                                "refs/heads/" + branch + ":refs/heads/" + branch),
-                                        new org.eclipse.jgit.transport.RefSpec(
-                                                "refs/tags/*:refs/tags/*"))
+                                .setRefSpecs(new RefSpec(
+                                                "refs/heads/" + branch + ":refs/heads/" + upstream),
+                                        new RefSpec("refs/tags/*:refs/tags/*"))
                                 .call();
                     }
                     return null;
@@ -425,8 +531,8 @@ public final class GitRepo {
             throw new IOException(String.valueOf(e.getMessage()));
         }
         // 推成功了就把上游记下来，以后拉取知道对哪个分支
-        setTracking(branch);
-        return branch;
+        setUpstream(upstream);
+        return upstream;
     }
 
     /** 拉取的三种结局。 */
@@ -454,9 +560,9 @@ public final class GitRepo {
     }
 
     /** 拉取第一步：fetch 完先看两边什么关系，不直接改工作区。 */
-    public PullInfo fetchAndInspect(String token) throws IOException, GitAPIException {
+    public PullInfo fetchAndInspect(String token, Progress progress) throws IOException, GitAPIException {
         if (!hasRemote()) throw new IOException("还没有关联远端仓库");
-        final String branch = branch();
+        final String upstream = upstreamBranch();
         try {
             withRetry(new Attempt<Void>() {
                 @Override public Void run() throws Exception {
@@ -465,6 +571,7 @@ public final class GitRepo {
                                 .setRemote("origin")
                                 .setTimeout(NET_TIMEOUT_SECONDS)
                                 .setCredentialsProvider(credentials(token))
+                                .setProgressMonitor(monitor(progress))
                                 .setTagOpt(org.eclipse.jgit.transport.TagOpt.FETCH_TAGS)
                                 .call();
                     }
@@ -480,7 +587,7 @@ public final class GitRepo {
         String local = headId();
         String remote;
         try (Repository repo = open()) {
-            ObjectId id = repo.resolve("refs/remotes/origin/" + branch);
+            ObjectId id = repo.resolve("refs/remotes/origin/" + upstream);
             remote = id == null ? null : id.getName();
         }
         if (remote == null) return new PullInfo(PULL_NO_REMOTE_BRANCH, local, null);
@@ -504,14 +611,16 @@ public final class GitRepo {
 
     /** 把本地切到某个提交（分支跟着走），用于快进到远端 / 以远端为准。 */
     public void hardResetTo(String commitId) throws IOException, GitAPIException {
+        String upstream = upstreamBranch();
         try (Git git = new Git(open())) {
             git.reset().setMode(ResetCommand.ResetType.HARD).setRef(commitId).call();
         }
-        setTracking(branch());
+        setUpstream(upstream);
     }
 
     /** 直接把项目克隆成一个新仓库。 */
-    public static void cloneInto(final File dir, final String url, final String token)
+    public static void cloneInto(final File dir, final String url, final String token,
+                                 final Progress progress)
             throws IOException, GitAPIException {
         try {
             withRetry(new Attempt<Void>() {
@@ -526,6 +635,7 @@ public final class GitRepo {
                             .setDirectory(dir)
                             .setTimeout(NET_TIMEOUT_SECONDS)
                             .setCredentialsProvider(credentials(token))
+                            .setProgressMonitor(monitor(progress))
                             .setCloneAllBranches(true)
                             .call()) {
                         // 关掉即完成；cloned repo 的 origin 已经配好
@@ -555,7 +665,7 @@ public final class GitRepo {
     }
 
     /** 只把远端的东西取下来，不动工作区。 */
-    public void fetchRemote(String token) throws IOException, GitAPIException {
+    public void fetchRemote(String token, Progress progress) throws IOException, GitAPIException {
         if (!hasRemote()) throw new IOException("还没有关联远端仓库");
         try {
             withRetry(new Attempt<Void>() {
@@ -565,6 +675,7 @@ public final class GitRepo {
                                 .setRemote("origin")
                                 .setTimeout(NET_TIMEOUT_SECONDS)
                                 .setCredentialsProvider(credentials(token))
+                                .setProgressMonitor(monitor(progress))
                                 .setTagOpt(org.eclipse.jgit.transport.TagOpt.FETCH_TAGS)
                                 .call();
                     }
@@ -583,7 +694,7 @@ public final class GitRepo {
         List<CommitInfo> out = new ArrayList<>();
         if (!exists()) return out;
         try (Repository repo = open(); RevWalk rw = new RevWalk(repo)) {
-            ObjectId id = repo.resolve("refs/remotes/origin/" + branch());
+            ObjectId id = repo.resolve("refs/remotes/origin/" + upstreamBranch());
             if (id == null) return out;
             rw.markStart(rw.parseCommit(id));
             int n = 0;
@@ -600,7 +711,7 @@ public final class GitRepo {
     public String remoteHeadId() {
         if (!exists()) return null;
         try (Repository repo = open()) {
-            ObjectId id = repo.resolve("refs/remotes/origin/" + branch());
+            ObjectId id = repo.resolve("refs/remotes/origin/" + upstreamBranch());
             return id == null ? null : id.getName();
         } catch (Exception e) {
             return null;
@@ -610,7 +721,7 @@ public final class GitRepo {
     /** 从远端 url 推一个还没关联仓库的本地仓库：建好 origin 再推。 */
     public void pushTo(String url, String token) throws IOException, GitAPIException {
         setRemote(url);
-        push(token);
+        push(token, null);
     }
 
     /** 网络操作重试次数：GitHub 的 HTTPS 会偶发被重置，第一次失败就放弃太亏。 */
@@ -672,6 +783,93 @@ public final class GitRepo {
             cur = cur.getCause();
         }
         return false;
+    }
+
+    /**
+     * 把 JGit 的英文阶段名换成看得懂的说法，数字照留。
+     *
+     * 进度回调形如「Writing objects 12/57」，翻译时把尾巴上的 12/57 剥出来接在后面。
+     */
+    public static String zhStep(String raw) {
+        if (raw == null || raw.isEmpty()) return "正在传输…";
+        String text = raw.trim();
+        String suffix = "";
+        int space = text.lastIndexOf(' ');
+        if (space > 0) {
+            String tail = text.substring(space + 1);
+            if (tail.matches("\\d+/\\d+")) {
+                suffix = " " + tail;
+                text = text.substring(0, space).trim();
+            }
+        }
+        String key = text.toLowerCase(Locale.US);
+        String zh;
+        if (key.startsWith("finding sources")) zh = "正在整理要推送的内容";
+        else if (key.startsWith("finding local")) zh = "正在查找改动";
+        else if (key.startsWith("writing objects")) zh = "正在上传";
+        else if (key.startsWith("compressing objects")) zh = "正在压缩";
+        else if (key.startsWith("building")) zh = "正在打包";
+        else if (key.startsWith("receiving objects")) zh = "正在下载";
+        else if (key.startsWith("resolving deltas")) zh = "正在整理下载的内容";
+        else if (key.startsWith("updating references")) zh = "正在更新分支";
+        else if (key.startsWith("checking out")) zh = "正在取出文件";
+        else zh = "正在传输";
+        return zh + suffix + "…";
+    }
+
+    /**
+     * 把 JGit 的进度事件转成一句人话交给界面显示。
+     *
+     * JGit 会按阶段回调（找对象、压包、上传、下载），带上已完成和总数；
+     * 回调很密，这里限一下频率，免得界面被刷得一直重绘。
+     */
+    private static final class Reporter implements ProgressMonitor {
+        private final Progress cb;
+        private String title = "";
+        private int total = 0;
+        private int done = 0;
+        private long last = 0;
+
+        Reporter(Progress cb) {
+            this.cb = cb;
+        }
+
+        @Override public void start(int totalTasks) {
+        }
+
+        @Override public void beginTask(String name, int totalWork) {
+            title = name == null ? "" : name;
+            total = totalWork;
+            done = 0;
+            publish(true);
+        }
+
+        @Override public void update(int completed) {
+            done += completed;
+            publish(false);
+        }
+
+        @Override public void endTask() {
+        }
+
+        @Override public boolean isCancelled() {
+            return false;
+        }
+
+        private void publish(boolean force) {
+            long now = System.currentTimeMillis();
+            if (!force && now - last < 120) return;
+            last = now;
+            String text = title;
+            if (total > 0) {
+                text = text + " " + Math.min(done, total) + "/" + total;
+            }
+            cb.onStep(text);
+        }
+    }
+
+    private static ProgressMonitor monitor(final Progress cb) {
+        return cb == null ? null : new Reporter(cb);
     }
 
     public static CredentialsProvider credentials(String token) {

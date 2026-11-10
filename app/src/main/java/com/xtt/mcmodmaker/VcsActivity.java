@@ -2,14 +2,17 @@ package com.xtt.mcmodmaker;
 
 import android.app.Activity;
 import android.content.DialogInterface;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.Editable;
 import android.text.TextWatcher;
+import android.view.Gravity;
 import android.view.View;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 
 import com.xtt.mcmodmaker.core.GitRepo;
@@ -22,6 +25,7 @@ import com.xtt.mcmodmaker.util.UiUtils;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -59,7 +63,23 @@ public class VcsActivity extends Activity {
     private OreTextView remoteSub;
     private OreEditText searchBox;
     private String remoteUrl = "";
+    /** 本地分支对着远端哪条分支（git 上游配置，没选过就是同名分支）。 */
+    private String upstream = "";
     private LinearLayout listContainer;
+    private LinearLayout busyRow;
+    private OreTextView busyText;
+
+    private boolean busy = false;
+    private String busyBase = "";
+    private long busyStart = 0;
+    private final Runnable busyTick = new Runnable() {
+        @Override public void run() {
+            if (!busy) return;
+            long sec = (System.currentTimeMillis() - busyStart) / 1000L;
+            busyText.setText(busyBase + "（" + sec + " 秒）");
+            main.postDelayed(this, 1000);
+        }
+    };
 
     private int currentTab = TAB_AUTO;
     private String query = "";
@@ -181,13 +201,13 @@ public class VcsActivity extends Activity {
         tabTag.setLayoutParams(tabParams);
         tabRemote.setLayoutParams(tabParams);
         tabAuto.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { switchTab(TAB_AUTO); }
+            @Override public void onClick(View v) { if (!busy) switchTab(TAB_AUTO); }
         });
         tabTag.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { switchTab(TAB_TAG); }
+            @Override public void onClick(View v) { if (!busy) switchTab(TAB_TAG); }
         });
         tabRemote.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { switchTab(TAB_REMOTE); }
+            @Override public void onClick(View v) { if (!busy) switchTab(TAB_REMOTE); }
         });
         tabs.addView(tabAuto);
         tabs.addView(tabTag);
@@ -195,6 +215,25 @@ public class VcsActivity extends Activity {
         // 没关联远端时这一栏没用，先藏着；关联之后才出现
         tabRemote.setVisibility(View.GONE);
         page.addView(tabs);
+        UiUtils.addGap(this, page, UiUtils.dp(this, 8));
+
+        // 网络操作期间显示的一条进度：转圈 + 当前在干什么，免得看起来像卡死
+        busyRow = new LinearLayout(this);
+        busyRow.setOrientation(LinearLayout.HORIZONTAL);
+        busyRow.setGravity(Gravity.CENTER_VERTICAL);
+        busyRow.setVisibility(View.GONE);
+        ProgressBar spinner = new ProgressBar(this);
+        spinner.setIndeterminate(true);
+        spinner.setIndeterminateTintList(ColorStateList.valueOf(Color.parseColor("#7ED321")));
+        LinearLayout.LayoutParams spinnerParams = new LinearLayout.LayoutParams(
+                UiUtils.dp(this, 18), UiUtils.dp(this, 18));
+        busyRow.addView(spinner, spinnerParams);
+        busyText = new OreTextView(this);
+        busyText.setTextColor(Color.parseColor("#9A9A9A"));
+        busyText.setTextSize(11);
+        busyText.setPadding(UiUtils.dp(this, 8), 0, 0, 0);
+        busyRow.addView(busyText);
+        page.addView(busyRow);
         UiUtils.addGap(this, page, UiUtils.dp(this, 8));
 
         ScrollView scroll = new ScrollView(this);
@@ -213,6 +252,7 @@ public class VcsActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        main.removeCallbacks(busyTick);
         if (executor != null) executor.shutdownNow();
         super.onDestroy();
     }
@@ -221,14 +261,19 @@ public class VcsActivity extends Activity {
 
     /** 后台读一遍仓库状态（第一次进来自动建仓）。 */
     private void reload() {
+        setBusy(true, "正在读取版本记录…");
         executor.execute(new Runnable() {
             @Override public void run() {
                 String error = null;
+                boolean needDetect = false;
                 try {
                     repo.ensureInit("初始提交");
                     commits = repo.commits(1000);
                     tags = repo.tags();
                     remoteUrl = repo.remoteUrl();
+                    upstream = repo.upstreamBranch();
+                    // 关联了远端却还没选过分支：下面单独去问，别把页面卡在这上面
+                    needDetect = repo.hasRemote() && !repo.hasUpstream();
                     // 远端提交直接用上次 fetch 的结果，不用每次都联网
                     remoteCommits = repo.remoteCommits(300);
                     String rh = repo.remoteHeadId();
@@ -250,10 +295,44 @@ public class VcsActivity extends Activity {
                             renderRemoteCard();
                             render();
                         }
+                        setBusy(false, null);
                     }
                 });
+                if (needDetect) detectUpstream();
             }
         });
+    }
+
+    /**
+     * 关联过远端但没选过分支时，问一下远端默认分支是哪条。
+     *
+     * 只记「对着哪条分支」，不改本地分支名；问不出来就先用同名分支顶着，
+     * 用户在远程卡片里挑一次之后就不会再问。
+     */
+    private void detectUpstream() {
+        // 单独开线程：连不上时这里要等重试，别堵住后面排队的操作
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    GitRepo.RemoteBranches branches = repo.remoteBranches(GitAuth.token(VcsActivity.this));
+                    if (branches.defaultBranch == null || branches.defaultBranch.isEmpty()) return;
+                    repo.setUpstream(branches.defaultBranch);
+                    upstream = branches.defaultBranch;
+                    remoteCommits = repo.remoteCommits(300);
+                    String rh = repo.remoteHeadId();
+                    remoteHeadId = rh == null ? "" : rh;
+                    main.post(new Runnable() {
+                        @Override public void run() {
+                            renderRemoteCard();
+                            render();
+                        }
+                    });
+                } catch (Exception e) {
+                    // 网络不通就先用同名分支，用户可以在卡片里自己选
+                    LogUtil.logException(e);
+                }
+            }
+        }, "git-detect-branch").start();
     }
 
     private void switchTab(int tab) {
@@ -277,6 +356,77 @@ public class VcsActivity extends Activity {
         }
     }
 
+    // ==================== 进度 / 忙碌状态 ====================
+
+    /**
+     * 显示或隐藏列表上方的进度条。
+     *
+     * 网络操作可能要十几秒，中间又没有回调，只 toast 一句的话看着就像卡死了。
+     * 忙的时候分页、卡片、搜索框都点不动，防止重复发请求。
+     */
+    private void setBusy(final boolean on, final String text) {
+        UiUtils.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                if (busyRow == null) return;
+                busy = on;
+                main.removeCallbacks(busyTick);
+                if (!on) {
+                    busyRow.setVisibility(View.GONE);
+                    busyBase = "";
+                } else {
+                    busyBase = text == null || text.isEmpty() ? "处理中…" : text;
+                    busyStart = System.currentTimeMillis();
+                    busyRow.setVisibility(View.VISIBLE);
+                    busyText.setText(busyBase);
+                    main.postDelayed(busyTick, 1000);
+                }
+                setInputsEnabled(!on);
+            }
+        });
+    }
+
+    /** 操作途中换一句说明（JGit 的进度回调从后台线程来）。 */
+    private void setBusyText(final String text) {
+        if (text == null || text.isEmpty()) return;
+        UiUtils.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                if (!busy) return;
+                busyBase = text;
+                busyText.setText(text);
+            }
+        });
+    }
+
+    private void setInputsEnabled(boolean enabled) {
+        OreButton[] tabs = {tabAuto, tabTag, tabRemote};
+        for (OreButton b : tabs) {
+            if (b == null) continue;
+            b.setEnabled(enabled);
+            b.setAlpha(enabled ? 1f : 0.45f);
+        }
+        if (remoteCard != null) {
+            remoteCard.setEnabled(enabled);
+            remoteCard.setAlpha(enabled ? 1f : 0.7f);
+        }
+        if (searchBox != null) searchBox.setEnabled(enabled);
+    }
+
+    /**
+     * 把 JGit 的英文阶段名换成看得懂的说法，数字照留（实现在 GitRepo 里共用）。
+     */
+    private static String zhStep(String raw) {
+        return GitRepo.zhStep(raw);
+    }
+
+    /** 传给 GitRepo 的进度回调：翻成人话丢给上面的进度条。 */
+    private GitRepo.Progress progress() {
+        return new GitRepo.Progress() {
+            @Override public void onStep(String text) {
+                setBusyText(zhStep(text));
+            }
+        };
+    }
+
     // ==================== 远端 ====================
 
     private void renderRemoteCard() {
@@ -291,13 +441,15 @@ public class VcsActivity extends Activity {
             remoteTitle.setTextColor(Color.WHITE);
             remoteSub.setText("还没有关联，点这里填一个仓库地址");
         } else {
-            remoteTitle.setText("已关联远端仓库");
+            String br = upstream == null || upstream.isEmpty() ? "未选分支" : upstream;
+            remoteTitle.setText("已关联远端仓库 · " + br);
             remoteTitle.setTextColor(Color.parseColor("#7ED321"));
             remoteSub.setText(remoteUrl);
         }
     }
 
     private void onRemoteCardClick() {
+        if (busy) return;
         if (remoteUrl == null || remoteUrl.trim().isEmpty()) {
             showRemoteDialog();
             return;
@@ -317,6 +469,14 @@ public class VcsActivity extends Activity {
                 doPull();
             }
         });
+        String br = upstream == null || upstream.isEmpty() ? "未选" : upstream;
+        b.addButton("切换远端分支（当前 " + br + "）", StyleSheet.STYLE_DARK_GRAY,
+                new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int which) {
+                        d.dismiss();
+                        showBranchPicker();
+                    }
+                });
         b.addButton("修改地址", StyleSheet.STYLE_DARK_GRAY, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface d, int which) {
                 d.dismiss();
@@ -333,6 +493,100 @@ public class VcsActivity extends Activity {
             @Override public void onClick(DialogInterface d, int which) { d.dismiss(); }
         });
         b.show();
+    }
+
+    /**
+     * 选远端分支。
+     *
+     * 本地分支叫什么不重要，推拉都对着这里选中的那条 ——
+     * 本地初始化的分支叫 master、远端默认是 main 时，默认取 main（远端 HEAD 指的）。
+     */
+    private void showBranchPicker() {
+        if (busy) return;
+        setBusy(true, "正在读取远端分支…");
+        final String token = GitAuth.token(this);
+        executor.execute(new Runnable() {
+            @Override public void run() {
+                String error = null;
+                GitRepo.RemoteBranches result = null;
+                try {
+                    result = repo.remoteBranches(token);
+                } catch (Exception e) {
+                    error = describe(e);
+                    LogUtil.logException(e);
+                }
+                final String err = error;
+                final GitRepo.RemoteBranches list = result;
+                main.post(new Runnable() {
+                    @Override public void run() {
+                        setBusy(false, null);
+                        if (err != null) {
+                            UiUtils.toast(VcsActivity.this, "读取分支失败：" + err);
+                            return;
+                        }
+                        if (list == null || list.branches.isEmpty()) {
+                            UiUtils.toast(VcsActivity.this, "远端还没有分支，先推送一次");
+                            return;
+                        }
+                        showBranchList(list);
+                    }
+                });
+            }
+        });
+    }
+
+    private void showBranchList(final GitRepo.RemoteBranches list) {
+        OreDialogBuilder b = new OreDialogBuilder(this);
+        b.setTitle("选择远端分支");
+        b.setButtonOrientation(LinearLayout.VERTICAL);
+        for (final String name : list.branches) {
+            String label = name;
+            if (name.equals(list.defaultBranch)) label = label + "（默认）";
+            if (name.equals(upstream)) label = "✓ " + label;
+            b.addButton(label,
+                    name.equals(upstream) ? StyleSheet.STYLE_GREEN : StyleSheet.STYLE_WHITE,
+                    new DialogInterface.OnClickListener() {
+                        @Override public void onClick(DialogInterface d, int which) {
+                            d.dismiss();
+                            applyBranch(name, list.defaultBranch);
+                        }
+                    });
+        }
+        b.addButton("取消", StyleSheet.STYLE_DARK_GRAY, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int which) { d.dismiss(); }
+        });
+        b.show();
+    }
+
+    private void applyBranch(final String name, final String defaultBranch) {
+        setBusy(true, "正在切换分支…");
+        executor.execute(new Runnable() {
+            @Override public void run() {
+                String error = null;
+                try {
+                    repo.setUpstream(name);
+                    upstream = name;
+                } catch (Exception e) {
+                    error = String.valueOf(e.getMessage());
+                    LogUtil.logException(e);
+                }
+                final String err = error;
+                main.post(new Runnable() {
+                    @Override public void run() {
+                        setBusy(false, null);
+                        if (err != null) {
+                            UiUtils.toast(VcsActivity.this, "切换失败：" + err);
+                            return;
+                        }
+                        UiUtils.toast(VcsActivity.this,
+                                "远端分支已切到 " + name + (name.equals(defaultBranch) ? "（默认）" : ""));
+                        renderRemoteCard();
+                        // 换了分支，远端提交要按新分支重新读
+                        reload();
+                    }
+                });
+            }
+        });
     }
 
     /** 填远端地址。 */
@@ -378,6 +632,7 @@ public class VcsActivity extends Activity {
     }
 
     private void saveRemote(final String url) {
+        setBusy(true, "正在保存远端地址…");
         executor.execute(new Runnable() {
             @Override public void run() {
                 String error = null;
@@ -385,6 +640,7 @@ public class VcsActivity extends Activity {
                     repo.ensureInit("初始提交");
                     repo.setRemote(url);
                     remoteUrl = url;
+                    upstream = repo.upstreamBranch();
                 } catch (Exception e) {
                     error = String.valueOf(e.getMessage());
                     LogUtil.logException(e);
@@ -392,10 +648,14 @@ public class VcsActivity extends Activity {
                 final String err = error;
                 main.post(new Runnable() {
                     @Override public void run() {
-                        if (err != null) UiUtils.toast(VcsActivity.this, "保存失败：" + err);
-                        else {
+                        setBusy(false, null);
+                        if (err != null) {
+                            UiUtils.toast(VcsActivity.this, "保存失败：" + err);
+                        } else {
                             UiUtils.toast(VcsActivity.this, "已关联远端仓库");
                             renderRemoteCard();
+                            // 顺带问一下这条远端的默认分支，好让「远端」栏读对分支
+                            reload();
                         }
                     }
                 });
@@ -421,7 +681,9 @@ public class VcsActivity extends Activity {
                     @Override public void run() {
                         try {
                             repo.removeRemote();
+                            repo.clearUpstream();
                             remoteUrl = "";
+                            upstream = "";
                         } catch (Exception e) {
                             LogUtil.logException(e);
                         }
@@ -468,6 +730,7 @@ public class VcsActivity extends Activity {
 
     /** 推送前先写一句说明，作为这一版提交的标题。 */
     private void doPush() {
+        if (busy) return;
         if (!ensureToken()) return;
         showPushDialog();
     }
@@ -507,7 +770,7 @@ public class VcsActivity extends Activity {
      * @param description 用户填的说明；填了就作为提交信息，不填就退回自动保存那句
      */
     private void pushNow(final String description) {
-        UiUtils.toast(this, "正在推送…");
+        setBusy(true, "正在推送…");
         final String token = GitAuth.token(this);
         executor.execute(new Runnable() {
             @Override public void run() {
@@ -519,7 +782,7 @@ public class VcsActivity extends Activity {
                     String message = description == null || description.isEmpty()
                             ? GitWorkspace.autoMessage(now) : description;
                     repo.commitIfChanged(message);
-                    branch = repo.push(token);
+                    branch = repo.push(token, progress());
                 } catch (Exception e) {
                     error = describe(e);
                     LogUtil.logException(e);
@@ -528,8 +791,9 @@ public class VcsActivity extends Activity {
                 final String br = branch;
                 main.post(new Runnable() {
                     @Override public void run() {
+                        setBusy(false, null);
                         if (err != null) UiUtils.toast(VcsActivity.this, "推送失败：" + err);
-                        else UiUtils.toast(VcsActivity.this, "已推送到 " + br);
+                        else UiUtils.toast(VcsActivity.this, "已推送到远端 " + br);
                         reload();
                     }
                 });
@@ -538,8 +802,9 @@ public class VcsActivity extends Activity {
     }
 
     private void doPull() {
+        if (busy) return;
         // 公开仓库不用令牌也能拉；私有仓库会由服务端拒绝，错误提示里会说清
-        UiUtils.toast(this, "正在检查远端…");
+        setBusy(true, "正在检查远端…");
         final String token = GitAuth.token(this);
         executor.execute(new Runnable() {
             @Override public void run() {
@@ -547,7 +812,7 @@ public class VcsActivity extends Activity {
                 GitRepo.PullInfo info = null;
                 try {
                     repo.ensureInit("初始提交");
-                    info = repo.fetchAndInspect(token);
+                    info = repo.fetchAndInspect(token, progress());
                 } catch (Exception e) {
                     error = describe(e);
                     LogUtil.logException(e);
@@ -556,6 +821,7 @@ public class VcsActivity extends Activity {
                 final GitRepo.PullInfo result = info;
                 main.post(new Runnable() {
                     @Override public void run() {
+                        setBusy(false, null);
                         if (err != null) {
                             UiUtils.toast(VcsActivity.this, "拉取失败：" + err);
                             return;
@@ -635,6 +901,7 @@ public class VcsActivity extends Activity {
      *                 免得本地那版直接没了
      */
     private void applyPull(final String remoteCommit, final boolean byRemote) {
+        setBusy(true, byRemote ? "正在用远端内容覆盖本地…" : "正在更新到远端版本…");
         executor.execute(new Runnable() {
             @Override public void run() {
                 String error = null;
@@ -652,6 +919,7 @@ public class VcsActivity extends Activity {
                 final String err = error;
                 main.post(new Runnable() {
                     @Override public void run() {
+                        setBusy(false, null);
                         if (err != null) UiUtils.toast(VcsActivity.this, "拉取失败：" + err);
                         else UiUtils.toast(VcsActivity.this, "已更新到远端版本");
                         reload();
@@ -807,14 +1075,15 @@ public class VcsActivity extends Activity {
 
     /** 只 fetch 不改工作区，把远端提交列出来。 */
     private void fetchRemoteList() {
-        UiUtils.toast(this, "正在读取远端…");
+        if (busy) return;
+        setBusy(true, "正在读取远端…");
         final String token = GitAuth.token(this);
         executor.execute(new Runnable() {
             @Override public void run() {
                 String error = null;
                 try {
                     repo.ensureInit("初始提交");
-                    repo.fetchRemote(token);
+                    repo.fetchRemote(token, progress());
                     remoteCommits = repo.remoteCommits(300);
                 } catch (Exception e) {
                     error = describe(e);
@@ -823,6 +1092,7 @@ public class VcsActivity extends Activity {
                 final String err = error;
                 main.post(new Runnable() {
                     @Override public void run() {
+                        setBusy(false, null);
                         if (err != null) UiUtils.toast(VcsActivity.this, "读取远端失败：" + err);
                         render();
                     }
@@ -912,7 +1182,8 @@ public class VcsActivity extends Activity {
     }
 
     private void createTag(final String description) {
-        UiUtils.toast(this, "正在保存…");
+        if (busy) return;
+        setBusy(true, "正在保存为版本…");
         executor.execute(new Runnable() {
             @Override public void run() {
                 String error = null;
@@ -931,6 +1202,7 @@ public class VcsActivity extends Activity {
                 final String err = error;
                 main.post(new Runnable() {
                     @Override public void run() {
+                        setBusy(false, null);
                         if (err != null) {
                             UiUtils.toast(VcsActivity.this, "保存失败：" + err);
                         } else {
@@ -971,7 +1243,8 @@ public class VcsActivity extends Activity {
     }
 
     private void doRestore(final String commitId, final String label) {
-        UiUtils.toast(this, "正在恢复…");
+        if (busy) return;
+        setBusy(true, "正在恢复到 " + label + "…");
         executor.execute(new Runnable() {
             @Override public void run() {
                 String error = null;
@@ -991,6 +1264,7 @@ public class VcsActivity extends Activity {
                 final boolean unchanged = same;
                 main.post(new Runnable() {
                     @Override public void run() {
+                        setBusy(false, null);
                         if (err != null) UiUtils.toast(VcsActivity.this, "恢复失败：" + err);
                         else if (unchanged) UiUtils.toast(VcsActivity.this, "这就是当前版本");
                         else UiUtils.toast(VcsActivity.this, "已恢复到 " + label);

@@ -2,14 +2,17 @@ package com.xtt.mcmodmaker;
 
 import android.app.Activity;
 import android.content.DialogInterface;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.Editable;
 import android.text.TextWatcher;
+import android.view.Gravity;
 import android.view.View;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 
 import com.xtt.mcmodmaker.core.Constants;
@@ -43,6 +46,20 @@ public class GitHubImportActivity extends Activity {
     private OreTextView status;
     private OreEditText searchBox;
     private LinearLayout listContainer;
+    private LinearLayout busyRow;
+    private OreTextView busyText;
+
+    private boolean busy = false;
+    private String busyBase = "";
+    private long busyStart = 0;
+    private final Runnable busyTick = new Runnable() {
+        @Override public void run() {
+            if (!busy) return;
+            long sec = (System.currentTimeMillis() - busyStart) / 1000L;
+            busyText.setText(busyBase + "（" + sec + " 秒）");
+            main.postDelayed(this, 1000);
+        }
+    };
 
     private String query = "";
     private List<GitHubClient.Repo> repos = new ArrayList<>();
@@ -87,7 +104,25 @@ public class GitHubImportActivity extends Activity {
         status.setTextSize(11);
         status.setPadding(0, UiUtils.dp(this, 3), 0, 0);
         page.addView(status);
-        UiUtils.addGap(this, page, UiUtils.dp(this, 10));
+        UiUtils.addGap(this, page, UiUtils.dp(this, 8));
+
+        // 列表读取和克隆都可能要等十几秒，给一条看得见的进度
+        busyRow = new LinearLayout(this);
+        busyRow.setOrientation(LinearLayout.HORIZONTAL);
+        busyRow.setGravity(Gravity.CENTER_VERTICAL);
+        busyRow.setVisibility(View.GONE);
+        ProgressBar spinner = new ProgressBar(this);
+        spinner.setIndeterminate(true);
+        spinner.setIndeterminateTintList(ColorStateList.valueOf(Color.parseColor("#7ED321")));
+        busyRow.addView(spinner, new LinearLayout.LayoutParams(
+                UiUtils.dp(this, 18), UiUtils.dp(this, 18)));
+        busyText = new OreTextView(this);
+        busyText.setTextColor(Color.parseColor("#9A9A9A"));
+        busyText.setTextSize(11);
+        busyText.setPadding(UiUtils.dp(this, 8), 0, 0, 0);
+        busyRow.addView(busyText);
+        page.addView(busyRow);
+        UiUtils.addGap(this, page, UiUtils.dp(this, 2));
 
         searchBox = new OreEditText(this);
         searchBox.setHint("搜索仓库名");
@@ -118,8 +153,57 @@ public class GitHubImportActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        main.removeCallbacks(busyTick);
         if (executor != null) executor.shutdownNow();
         super.onDestroy();
+    }
+
+    // ==================== 进度 ====================
+
+    /** 显示/隐藏列表上方的进度条；忙的时候搜索框和卡片都点不动。 */
+    private void setBusy(final boolean on, final String text) {
+        UiUtils.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                if (busyRow == null) return;
+                busy = on;
+                main.removeCallbacks(busyTick);
+                if (!on) {
+                    busyRow.setVisibility(View.GONE);
+                    busyBase = "";
+                } else {
+                    busyBase = text == null || text.isEmpty() ? "处理中…" : text;
+                    busyStart = System.currentTimeMillis();
+                    busyRow.setVisibility(View.VISIBLE);
+                    busyText.setText(busyBase);
+                    main.postDelayed(busyTick, 1000);
+                }
+                if (searchBox != null) searchBox.setEnabled(!on);
+                if (listContainer != null) {
+                    listContainer.setEnabled(!on);
+                    listContainer.setAlpha(on ? 0.7f : 1f);
+                }
+            }
+        });
+    }
+
+    private void setBusyText(final String text) {
+        if (text == null || text.isEmpty()) return;
+        UiUtils.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                if (!busy) return;
+                busyBase = text;
+                busyText.setText(text);
+            }
+        });
+    }
+
+    /** 传给 GitRepo 的进度回调。 */
+    private GitRepo.Progress progress() {
+        return new GitRepo.Progress() {
+            @Override public void onStep(String text) {
+                setBusyText(GitRepo.zhStep(text));
+            }
+        };
     }
 
     // ==================== 数据 ====================
@@ -152,6 +236,7 @@ public class GitHubImportActivity extends Activity {
 
         status.setText("正在读取仓库列表…");
         listContainer.removeAllViews();
+        setBusy(true, "正在读取仓库列表…");
         final String token = GitAuth.token(this);
         executor.execute(new Runnable() {
             @Override public void run() {
@@ -167,6 +252,7 @@ public class GitHubImportActivity extends Activity {
                 final List<GitHubClient.Repo> result = list;
                 main.post(new Runnable() {
                     @Override public void run() {
+                        setBusy(false, null);
                         if (err != null) {
                             status.setText("读取失败：" + err);
                             return;
@@ -305,14 +391,16 @@ public class GitHubImportActivity extends Activity {
     }
 
     private void cloneRepo(final GitHubClient.Repo repo, final File target) {
+        if (busy) return;
         status.setText("正在克隆 " + repo.name + "…");
+        setBusy(true, "正在克隆 " + repo.name + "…");
         final String token = GitAuth.token(this);
         executor.execute(new Runnable() {
             @Override
             public void run() {
                 String error = null;
                 try {
-                    GitRepo.cloneInto(target, repo.cloneUrl, token);
+                    GitRepo.cloneInto(target, repo.cloneUrl, token, progress());
                 } catch (Exception e) {
                     error = String.valueOf(e.getMessage());
                     LogUtil.logException(e);
@@ -326,6 +414,7 @@ public class GitHubImportActivity extends Activity {
                 main.post(new Runnable() {
                     @Override
                     public void run() {
+                        setBusy(false, null);
                         if (err != null) {
                             status.setText("克隆失败：" + err);
                             UiUtils.toast(GitHubImportActivity.this, "克隆失败：" + err);
