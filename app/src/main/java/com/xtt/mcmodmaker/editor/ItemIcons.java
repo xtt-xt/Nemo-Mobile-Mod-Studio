@@ -87,7 +87,7 @@ public final class ItemIcons {
         String[] six = BlockTextureLib.resolveFaces(context, id, projectDir);
 
         // 1. 原版方块里有真实形状的（台阶、楼梯、栅栏、箱子……）按写死的形状拼出来
-        if (six != null && com.xtt.mcmodmaker.core.VanillaShapes.canShape(id)) {
+        if (six != null && com.xtt.mcmodmaker.core.VanillaShapes.canShape(context, id)) {
             Bitmap shaped = renderVanilla(context, id, projectDir, six, sizePx);
             if (shaped != null) return shaped;
         }
@@ -135,7 +135,7 @@ public final class ItemIcons {
                                         String[] six, int sizePx) {
         try {
             com.xtt.mcmodmaker.core.BlockModel model =
-                    com.xtt.mcmodmaker.core.VanillaShapes.build(id, six);
+                    com.xtt.mcmodmaker.core.VanillaShapes.build(context, id, six);
             if (model == null) return null;
             return ModelRenderer.renderModel(context, model, projectDir, sizePx);
         } catch (Exception e) {

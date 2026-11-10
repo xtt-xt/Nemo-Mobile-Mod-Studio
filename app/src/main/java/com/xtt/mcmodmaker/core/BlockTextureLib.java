@@ -272,8 +272,79 @@ public final class BlockTextureLib {
             MISSING.add(key);
             return null;
         }
+        bmp = firstFrame(bmp);
+        bmp = tint(path, bmp);
         TEX_CACHE.put(key, bmp);
         return bmp;
+    }
+
+    /**
+     * 动态贴图是一竖条排下来的若干帧（水、岩浆、营火、灯笼都是），
+     * 图标只取第一帧，不然整条胶片会被压进一个面里。
+     */
+    private static Bitmap firstFrame(Bitmap bmp) {
+        if (bmp == null) return null;
+        int w = bmp.getWidth();
+        int h = bmp.getHeight();
+        if (w <= 0 || h <= w || h % w != 0) return bmp;
+        try {
+            return Bitmap.createBitmap(bmp, 0, 0, w, w);
+        } catch (Exception e) {
+            return bmp;
+        }
+    }
+
+    /**
+     * 草、树叶、藤蔓在基岩版里是灰度贴图，游戏运行时按生物群系染色。
+     * 图标这里按平原的草色 / 树叶色染一遍，不然显示出来是灰的。
+     */
+    private static final Map<String, Integer> TINT = new HashMap<>();
+
+    static {
+        int grass = 0x91BD59;
+        int foliage = 0x77AB2F;
+        for (String n : new String[]{"tallgrass", "fern", "grass_top", "grass_side",
+                "double_plant_grass_top", "double_plant_grass_bottom",
+                "double_plant_fern_top", "double_plant_fern_bottom", "vine", "waterlily"}) {
+            TINT.put(n, grass);
+        }
+        for (String n : new String[]{"leaves_oak", "leaves_big_oak", "leaves_acacia",
+                "leaves_jungle", "bush"}) {
+            TINT.put(n, foliage);
+        }
+        TINT.put("leaves_birch", 0x80A755);
+        TINT.put("leaves_spruce", 0x619961);
+        TINT.put("mangrove_leaves", 0x8DB127);
+    }
+
+    private static Bitmap tint(String path, Bitmap bmp) {
+        if (bmp == null || path == null) return bmp;
+        String name = path;
+        int slash = name.lastIndexOf('/');
+        if (slash >= 0) name = name.substring(slash + 1);
+        if (name.endsWith(".png")) name = name.substring(0, name.length() - 4);
+        Integer color = TINT.get(name);
+        if (color == null) return bmp;
+        int r = (color >> 16) & 0xFF;
+        int g = (color >> 8) & 0xFF;
+        int b = color & 0xFF;
+        int w = bmp.getWidth();
+        int h = bmp.getHeight();
+        if (w <= 0 || h <= 0) return bmp;
+        int[] px = new int[w * h];
+        bmp.getPixels(px, 0, w, 0, 0, w, h);
+        for (int i = 0; i < px.length; i++) {
+            int p = px[i];
+            int a = p >>> 24;
+            if (a == 0) continue;
+            int nr = ((p >> 16) & 0xFF) * r / 255;
+            int ng = ((p >> 8) & 0xFF) * g / 255;
+            int nb = (p & 0xFF) * b / 255;
+            px[i] = (a << 24) | (nr << 16) | (ng << 8) | nb;
+        }
+        Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        out.setPixels(px, 0, w, 0, 0, w, h);
+        return out;
     }
 
     /** 工程里自动给路径补 .png 后缀，也接受已经带后缀的写法。 */

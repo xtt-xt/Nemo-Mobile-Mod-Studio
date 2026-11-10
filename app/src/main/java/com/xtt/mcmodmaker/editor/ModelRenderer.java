@@ -183,6 +183,7 @@ public final class ModelRenderer {
 
         // 4. 逐面光栅化
         int[] buf = new int[w * h];
+        float[] zbuf = new float[w * h];
         for (Shot s : shots) {
             int[][] screen = new int[4][2];
             for (int i = 0; i < 4; i++) {
@@ -190,7 +191,7 @@ public final class ModelRenderer {
                 screen[i][1] = Math.round(s.pts[i][1] * scale + offY);
             }
             Bitmap tex = textureFor(context, spec, projectDir, s.face);
-            drawQuad(buf, w, h, screen, s.face.uv, tex,
+            drawQuad(buf, zbuf, w, h, screen, s.face.uv, s.face.verts, s.depth, tex,
                     model.textureWidth, model.textureHeight, shadeOf(s.face));
         }
 
@@ -232,18 +233,26 @@ public final class ModelRenderer {
     // ==================== 光栅化 ====================
 
     /** 画一个四边形（拆成两个三角形）。 */
-    private static void drawQuad(int[] buf, int w, int h, int[][] p, float[] uv,
+    private static void drawQuad(int[] buf, float[] zbuf, int w, int h, int[][] p, float[] uv,
+                                 float[][] verts, float depth,
                                  Bitmap tex, float texW, float texH, float shade) {
-        drawTriangle(buf, w, h, p[0], p[1], p[2],
-                uv[0], uv[1], uv[2], uv[3], uv[4], uv[5], tex, texW, texH, shade);
-        drawTriangle(buf, w, h, p[0], p[2], p[3],
-                uv[0], uv[1], uv[4], uv[5], uv[6], uv[7], tex, texW, texH, shade);
+        drawTriangle(buf, zbuf, w, h, p[0], p[1], p[2], verts[0], verts[1], verts[2],
+                uv[0], uv[1], uv[2], uv[3], uv[4], uv[5], depth, tex, texW, texH, shade);
+        drawTriangle(buf, zbuf, w, h, p[0], p[2], p[3], verts[0], verts[2], verts[3],
+                uv[0], uv[1], uv[4], uv[5], uv[6], uv[7], depth, tex, texW, texH, shade);
     }
 
-    private static void drawTriangle(int[] buf, int w, int h,
+    /**
+     * 逐像素画三角形，带深度测试。
+     *
+     * 之前是「远的先画」的画家算法，两块贴在一起的形状（钟体套在吊杆上、铁砧的
+     * 三段）会互相盖错，所以改成按亚像素深度做 z-buffer。
+     */
+    private static void drawTriangle(int[] buf, float[] zbuf, int w, int h,
                                      int[] a, int[] b, int[] c,
+                                     float[] pa, float[] pb, float[] pc,
                                      float ua, float va, float ub, float vb, float uc, float vc,
-                                     Bitmap tex, float texW, float texH, float shade) {
+                                     float depth, Bitmap tex, float texW, float texH, float shade) {
         float ax = a[0], ay = a[1];
         float bx = b[0], by = b[1];
         float cx = c[0], cy = c[1];
@@ -270,6 +279,10 @@ public final class ModelRenderer {
         }
 
         float invArea = 1f / area;
+        // 相机在 (+x,+y,+z)，投影平面沿 x+y+z 递减，所以用 (x+y+z) 当深度，越小越近
+        float da = pa[0] + pa[1] + pa[2];
+        float db = pb[0] + pb[1] + pb[2];
+        float dc = pc[0] + pc[1] + pc[2];
         int fr = (FALLBACK_COLOR >> 16) & 0xFF;
         int fg = (FALLBACK_COLOR >> 8) & 0xFF;
         int fb = FALLBACK_COLOR & 0xFF;
@@ -290,12 +303,11 @@ public final class ModelRenderer {
                 if (texPixels != null) {
                     float fx = u / texW * texPxW;
                     float fy = v / texH * texPxH;
+                    // 取整后可能落到 -1（模型里 uv 有 -0.5 这种写法），按环绕取回贴图内
                     int tx = (int) Math.floor(fx);
                     int ty = (int) Math.floor(fy);
-                    if (tx < 0) tx = 0;
-                    if (ty < 0) ty = 0;
-                    if (tx >= texPxW) tx = texPxW - 1;
-                    if (ty >= texPxH) ty = texPxH - 1;
+                    tx = ((tx % texPxW) + texPxW) % texPxW;
+                    ty = ((ty % texPxH) + texPxH) % texPxH;
                     int p = texPixels[ty * texPxW + tx];
                     alpha = p >>> 24;
                     if (alpha == 0) continue;
@@ -310,24 +322,31 @@ public final class ModelRenderer {
                 }
 
                 int i = y * w + x;
+                float z = da * w0 + db * w1 + dc * w2;
                 if (alpha >= 255) {
+                    if (z < zbuf[i] - Z_BIAS) continue;
+                    zbuf[i] = z;
                     buf[i] = 0xFF000000 | (clamp(r) << 16) | (clamp(g) << 8) | clamp(bl);
                 } else {
+                    if (z < zbuf[i] - Z_BIAS) continue;
                     int dst = buf[i];
-                    int da = dst >>> 24;
+                    int dstA = dst >>> 24;
                     int dr = (dst >> 16) & 0xFF;
                     int dg = (dst >> 8) & 0xFF;
-                    int db = dst & 0xFF;
+                    int dsb = dst & 0xFF;
                     float t = alpha / 255f;
-                    int oa = (int) (alpha + da * (1 - t));
+                    int oa = (int) (alpha + dstA * (1 - t));
                     int or = (int) (r * t + dr * (1 - t));
                     int og = (int) (g * t + dg * (1 - t));
-                    int ob = (int) (bl * t + db * (1 - t));
+                    int ob = (int) (bl * t + dsb * (1 - t));
                     buf[i] = (clamp(oa) << 24) | (clamp(or) << 16) | (clamp(og) << 8) | clamp(ob);
                 }
             }
         }
     }
+
+    /** 深度比较的容差，避免同一平面上的两个三角形打架。 */
+    private static final float Z_BIAS = 0.02f;
 
     private static int clamp(int v) {
         return v < 0 ? 0 : (v > 255 ? 255 : v);

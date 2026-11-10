@@ -92,5 +92,6 @@ public final class IconLoader {
         ModelRenderer.clearCache();
         com.xtt.mcmodmaker.core.BlockModels.clearCache();
         com.xtt.mcmodmaker.core.BlockTextureLib.clearCache();
+        com.xtt.mcmodmaker.core.VanillaShapes.clearCache();
     }
 }
