@@ -22,7 +22,8 @@ import java.util.Map;
 /**
  * 物品图标的统一入口。
  *
- * 三种来源，按顺序找：
+ * 四种来源，按顺序找：
+ *  0. 方块且有自定义模型（.geo.json）→ 按模型逐面光栅化（ModelRenderer）；
  *  1. 方块 → 六面贴图实时渲染成立方体（自定义方块也走这条，贴图从工程里取）；
  *  2. 普通物品 → 内置的原版物品贴图（assets/item_icons.json 是 id → 贴图的对照表）；
  *  3. 都没有 → 占位图，物品是灰苹果，方块是灰立方体。
@@ -77,6 +78,12 @@ public final class ItemIcons {
     }
 
     private static Bitmap build(Context context, String id, File projectDir, int sizePx) {
+        // 0. 有自定义模型（.geo.json）就按模型逐个面渲染，形状不再是死板的立方体
+        if (com.xtt.mcmodmaker.core.BlockModels.hasModel(projectDir, id)) {
+            Bitmap model = ModelRenderer.render(context, id, projectDir, sizePx);
+            if (model != null) return model;
+        }
+
         // 1. 方块：有六面数据就渲染；有数据但缺贴图就用灰立方体
         if (BlockTextureLib.resolveFaces(context, id, projectDir) != null) {
             Bitmap cube = BlockIconRenderer.render(context, id, projectDir, sizePx);

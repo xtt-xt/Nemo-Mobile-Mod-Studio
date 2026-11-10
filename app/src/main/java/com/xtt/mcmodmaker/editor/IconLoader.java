@@ -89,6 +89,8 @@ public final class IconLoader {
     public static void clearCaches() {
         ItemIcons.clearCache();
         BlockIconRenderer.clearCache();
+        ModelRenderer.clearCache();
+        com.xtt.mcmodmaker.core.BlockModels.clearCache();
         com.xtt.mcmodmaker.core.BlockTextureLib.clearCache();
     }
 }
