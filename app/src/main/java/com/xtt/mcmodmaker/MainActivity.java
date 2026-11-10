@@ -42,6 +42,7 @@ import com.xtt.mcmodmaker.net.GitAuth;
 import com.xtt.mcmodmaker.core.ProjectManager;
 import com.xtt.mcmodmaker.core.UpdateChecker;
 import com.xtt.mcmodmaker.util.DateUtils;
+import com.xtt.mcmodmaker.util.JsonUtils;
 import com.xtt.mcmodmaker.util.FileUtils;
 import com.xtt.mcmodmaker.util.SettingsManager;
 import com.xtt.mcmodmaker.util.UiUtils;
@@ -1012,7 +1013,7 @@ public class MainActivity extends Activity {
         if (isCopy) {
             timeText.setText("备份保存于: " + formatBackupTime(projectDir.getName()));
         } else {
-            timeText.setText("修改时间: " + DateUtils.formatMillis(projectDir.lastModified()));
+            timeText.setText("修改时间: " + projectEditedAt(projectDir));
         }
         timeText.setTextSize(12);
         timeText.setTextColor(Color.GRAY);
@@ -1028,6 +1029,18 @@ public class MainActivity extends Activity {
             }
         });
         return card;
+    }
+
+    /**
+     * 项目的最后编辑时间。
+     *
+     * 以 studio.json 里记的 updated_at 为准（每次有改动提交时刷新），
+     * 老项目没这个字段就退回目录的修改时间 —— 那个在只改文件内容时不会变，所以只当兜底。
+     */
+    private String projectEditedAt(File projectDir) {
+        long at = JsonUtils.getStudioUpdatedAt(projectDir);
+        if (at <= 0) at = projectDir.lastModified();
+        return DateUtils.formatMillis(at);
     }
 
     private String formatBackupTime(String folderName) {

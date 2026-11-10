@@ -6,9 +6,12 @@ import android.content.SharedPreferences;
 import com.xtt.mcmodmaker.util.SettingsManager;
 
 import java.io.File;
+import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+
+import org.eclipse.jgit.api.errors.GitAPIException;
 
 /**
  * 版本库的入口：提交身份从外部设置文件取，按项目目录拿到对应的 {@link GitRepo}。
@@ -44,6 +47,24 @@ public final class GitWorkspace {
 
     public static GitRepo repo(Context context, File projectDir) {
         return new GitRepo(projectDir, authorName(context), authorEmail(context));
+    }
+
+    /**
+     * 记一次改动。
+     *
+     * 只有真的有改动才提交，提交之前顺带把 studio.json 的最后编辑时间刷成现在，
+     * 于是这次改动和它的时间一起进同一条记录，主页读这个时间就行。
+     * 什么都没改时（只是翻了一眼配方就退出）不动 studio.json，历史里也不会多一条。
+     *
+     * @return 新提交；没有改动时返回 null
+     */
+    public static GitRepo.CommitInfo commit(Context context, File projectDir, String message)
+            throws IOException, GitAPIException {
+        GitRepo repo = repo(context, projectDir);
+        repo.ensureInit("初始提交");
+        if (!repo.hasChanges()) return null;
+        com.xtt.mcmodmaker.util.JsonUtils.touchStudioUpdatedAt(projectDir);
+        return repo.commitIfChanged(message);
     }
 
     private static SettingsManager settings(Context context) {

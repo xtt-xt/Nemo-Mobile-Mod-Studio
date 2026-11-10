@@ -117,7 +117,7 @@ public final class ItemRegistry {
         for (File pack : roots) {
             if (!pack.isDirectory()) continue;
             String pn = pack.getName().toLowerCase();
-            if (!pn.startsWith("behavior_pack") && !pn.startsWith("behaviour_pack")) continue;
+            if (!StudioConfig.isBehaviorPack(pn)) continue;
             collectFrom(new File(pack, "netease_items_beh"), false, names);
             collectFrom(new File(pack, "netease_blocks"), true, names);
         }
@@ -125,9 +125,26 @@ public final class ItemRegistry {
     }
 
     private static void collectFrom(File dir, boolean block, Map<String, String> names) {
+        collectFrom(dir, block, names, 0);
+    }
+
+    /**
+     * 递归收集定义文件。
+     *
+     * 有的工程把方块按系列分了子目录（netease_blocks/blast_glass/*.json），
+     * 只扫一层会一个都读不到，配方校验就会把本工程的东西全报成「找不到物品」。
+     */
+    private static void collectFrom(File dir, boolean block, Map<String, String> names, int depth) {
+        if (dir == null || depth > 8) return;
         File[] files = dir.listFiles();
         if (files == null) return;
         for (File f : files) {
+            if (f.isDirectory()) {
+                String dn = f.getName();
+                if (dn.equals(GitRepo.GIT_DIR) || dn.equals(".mcs")) continue;
+                collectFrom(f, block, names, depth + 1);
+                continue;
+            }
             if (!f.getName().toLowerCase().endsWith(".json")) continue;
             Entry e = readDefinition(f, block, names);
             if (e == null) continue;
@@ -194,7 +211,7 @@ public final class ItemRegistry {
         if (roots == null) return out;
         for (File pack : roots) {
             if (!pack.isDirectory()) continue;
-            if (!pack.getName().toLowerCase().startsWith("resource_pack")) continue;
+            if (!StudioConfig.isResourcePack(pack.getName())) continue;
             File texts = new File(pack, "texts");
             File[] langs = texts.listFiles();
             if (langs == null) continue;

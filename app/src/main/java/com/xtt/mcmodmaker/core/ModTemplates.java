@@ -52,7 +52,9 @@ public final class ModTemplates {
         return "{\n"
                 + "  \"id\": \"" + id + "\",\n"
                 + "  \"name\": \"" + name + "\",\n"
-                + "  \"namespace\": \"" + namespace + "\"\n"
+                + "  \"namespace\": \"" + namespace + "\",\n"
+                + "  \"updated_at\": \"" + com.xtt.mcmodmaker.util.JsonUtils.nowIso() + "\",\n"
+                + "  \"created_by\": \"" + com.xtt.mcmodmaker.util.JsonUtils.CREATOR + "\"\n"
                 + "}";
     }
 

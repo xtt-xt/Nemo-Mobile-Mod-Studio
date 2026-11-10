@@ -191,6 +191,10 @@ public final class StudioConfig {
             obj.put("id", defaultProjectId(projectDir));
             obj.put("name", projectName);
             if (!ns.isEmpty()) obj.put("namespace", ns);
+            obj.put(com.xtt.mcmodmaker.util.JsonUtils.KEY_UPDATED_AT,
+                    com.xtt.mcmodmaker.util.JsonUtils.nowIso());
+            obj.put(com.xtt.mcmodmaker.util.JsonUtils.KEY_CREATED_BY,
+                    com.xtt.mcmodmaker.util.JsonUtils.CREATOR);
             File file = studioFile(projectDir);
             com.xtt.mcmodmaker.util.FileUtils.writeText(file, obj.toString(2));
             return file;

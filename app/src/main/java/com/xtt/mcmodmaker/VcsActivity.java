@@ -782,7 +782,7 @@ public class VcsActivity extends Activity {
                     long now = System.currentTimeMillis();
                     String message = description == null || description.isEmpty()
                             ? GitWorkspace.autoMessage(now) : description;
-                    repo.commitIfChanged(message);
+                    GitWorkspace.commit(VcsActivity.this, projectDir, message);
                     branch = repo.push(token, progress());
                 } catch (Exception e) {
                     error = describe(e);
@@ -909,11 +909,13 @@ public class VcsActivity extends Activity {
                 int fill = FILL_SKIP;
                 try {
                     if (byRemote) {
-                        repo.commitIfChanged(GitWorkspace.autoMessage(System.currentTimeMillis()));
+                        GitWorkspace.commit(VcsActivity.this, projectDir, GitWorkspace.autoMessage(System.currentTimeMillis()));
                         repo.createTag(repo.uniqueTagName("remote-before"),
                                 "拉取覆盖前的本地自动备份");
                     }
                     repo.hardResetTo(remoteCommit);
+                    // 拉取覆盖也算一次编辑：时间刷新成现在，下次提交时一起进历史
+                    com.xtt.mcmodmaker.util.JsonUtils.touchStudioUpdatedAt(projectDir);
                     fill = fillStudioIfMissing();
                 } catch (Exception e) {
                     error = describe(e);
@@ -957,7 +959,7 @@ public class VcsActivity extends Activity {
         if (ns != null && !ns.isEmpty()) {
             try {
                 StudioConfig.writeStudio(projectDir, JsonUtils.getProjectName(projectDir), ns);
-                repo.commitIfChanged("补齐项目配置");
+                GitWorkspace.commit(VcsActivity.this, projectDir, "补齐项目配置");
                 return FILL_DONE;
             } catch (Exception e) {
                 LogUtil.logException(e);
@@ -1019,7 +1021,7 @@ public class VcsActivity extends Activity {
                 try {
                     repo.ensureInit("初始提交");
                     StudioConfig.writeStudio(projectDir, name, namespace);
-                    repo.commitIfChanged("补齐项目配置");
+                    GitWorkspace.commit(VcsActivity.this, projectDir, "补齐项目配置");
                 } catch (Exception e) {
                     error = String.valueOf(e.getMessage());
                     LogUtil.logException(e);
@@ -1299,7 +1301,7 @@ public class VcsActivity extends Activity {
                     repo.ensureInit("初始提交");
                     long now = System.currentTimeMillis();
                     // 先把没提交的改动存下来，否则标签指向的不是眼前这份内容
-                    repo.commitIfChanged(GitWorkspace.autoMessage(now));
+                    GitWorkspace.commit(VcsActivity.this, projectDir, GitWorkspace.autoMessage(now));
                     String message = description.isEmpty()
                             ? "备份 " + DateUtils.formatMillis(now) : description;
                     repo.createTag(repo.uniqueTagName("backup"), message);
@@ -1361,7 +1363,7 @@ public class VcsActivity extends Activity {
                 try {
                     repo.ensureInit("初始提交");
                     // 没落盘的手改先记下来，免得恢复动作把眼前这版弄丢
-                    repo.commitIfChanged(GitWorkspace.autoMessage(System.currentTimeMillis()));
+                    GitWorkspace.commit(VcsActivity.this, projectDir, GitWorkspace.autoMessage(System.currentTimeMillis()));
                     GitRepo.CommitInfo c = repo.restore(commitId, "恢复到 " + label,
                             "restore-before", "恢复「" + label + "」前的自动备份");
                     same = c == null;

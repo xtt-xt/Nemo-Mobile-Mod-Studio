@@ -547,7 +547,7 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
                     GitRepo repo = GitWorkspace.repo(EditorActivity.this, projectDir);
                     repo.ensureInit("初始提交");
                     long now = System.currentTimeMillis();
-                    repo.commitIfChanged(GitWorkspace.autoMessage(now));
+                    GitWorkspace.commit(EditorActivity.this, projectDir, GitWorkspace.autoMessage(now));
                     String message = description.isEmpty()
                             ? "备份 " + com.xtt.mcmodmaker.util.DateUtils.formatMillis(now)
                             : description;
@@ -1502,7 +1502,7 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
         if (ns != null && !ns.isEmpty()) {
             try {
                 StudioConfig.writeStudio(projectDir, projectDir.getName(), ns);
-                repo.commitIfChanged("补齐项目配置");
+                GitWorkspace.commit(EditorActivity.this, projectDir, "补齐项目配置");
                 runOnUiThread(new Runnable() {
                     @Override public void run() {
                         // 文件树里现在多了 studio.json，重新扫一遍
@@ -1560,7 +1560,7 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
                             GitRepo repo = GitWorkspace.repo(EditorActivity.this, projectDir);
                             repo.ensureInit("初始提交");
                             StudioConfig.writeStudio(projectDir, name, ns);
-                            repo.commitIfChanged("补齐项目配置");
+                            GitWorkspace.commit(EditorActivity.this, projectDir, "补齐项目配置");
                             runOnUiThread(new Runnable() {
                                 @Override public void run() {
                                     rootNode = scanDirectory(projectDir);
@@ -1598,7 +1598,7 @@ public class EditorActivity extends Activity implements RecipeEditor.Host {
                 try {
                     GitRepo repo = GitWorkspace.repo(EditorActivity.this, projectDir);
                     repo.ensureInit("初始提交");
-                    repo.commitIfChanged(GitWorkspace.autoMessage(System.currentTimeMillis()));
+                    GitWorkspace.commit(EditorActivity.this, projectDir, GitWorkspace.autoMessage(System.currentTimeMillis()));
                 } catch (Exception e) {
                     LogUtil.logException(e);
                 }

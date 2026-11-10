@@ -187,6 +187,20 @@ public final class GitRepo {
         }
     }
 
+    /**
+     * 工作区有没有没提交的改动。
+     *
+     * 和 commitIfChanged 分开是为了让调用方先判断再决定动不动别的文件（比如刷 studio.json 的时间）。
+     */
+    public boolean hasChanges() throws IOException, GitAPIException {
+        if (!exists()) return false;
+        try (Git git = new Git(open())) {
+            git.add().addFilepattern(".").call();
+            git.add().setUpdate(true).addFilepattern(".").call();
+            return !git.status().call().isClean();
+        }
+    }
+
     /** 最近的提交，新的在前；每个提交的时间用它自己的提交时间。 */
     public List<CommitInfo> commits(int max) throws IOException, GitAPIException {
         List<CommitInfo> out = new ArrayList<>();
@@ -317,6 +331,9 @@ public final class GitRepo {
             git.reset().setMode(ResetCommand.ResetType.SOFT).setRef(base).call();
             // 3. 补一个提交：内容 = 目标版本，父提交 = 恢复前的状态
             long now = System.currentTimeMillis();
+            // 恢复本身也是一次编辑，studio.json 的时间换成现在，
+            // 否则主页会显示成被恢复那一版的老时间
+            com.xtt.mcmodmaker.util.JsonUtils.setStudioUpdatedAt(workDir, now);
             RevCommit commit = git.commit()
                     .setMessage(label)
                     .setAuthor(person(now))

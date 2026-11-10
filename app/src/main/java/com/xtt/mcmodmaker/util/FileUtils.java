@@ -19,13 +19,24 @@ public final class FileUtils {
     private FileUtils() {
     }
 
-    /** 读取文件全部文本，失败返回空串（不抛出）。 */
+    /**
+     * 读取文件全部文本，失败返回空串（不抛出）。
+     *
+     * 会去掉开头的 UTF-8 BOM —— 网易 MCStudio 和不少编辑器写 json 时带 BOM，
+     * 留着的话 JSONObject 解析会在第 1 个字符就报错，看起来就像文件坏了。
+     */
     public static String readText(File file) {
         if (file == null || !file.exists() || file.length() <= 0) return "";
         try (FileInputStream fis = new FileInputStream(file)) {
             byte[] data = new byte[(int) file.length()];
             int read = fis.read(data);
-            return read <= 0 ? "" : new String(data, 0, read, "UTF-8");
+            if (read <= 0) return "";
+            int start = 0;
+            if (read >= 3 && (data[0] & 0xFF) == 0xEF && (data[1] & 0xFF) == 0xBB
+                    && (data[2] & 0xFF) == 0xBF) {
+                start = 3;
+            }
+            return new String(data, start, read - start, "UTF-8");
         } catch (IOException e) {
             return "";
         }

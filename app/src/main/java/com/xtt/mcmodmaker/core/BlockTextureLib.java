@@ -142,7 +142,7 @@ public final class BlockTextureLib {
         if (roots == null) return PROJECT_FACES;
         for (File pack : roots) {
             if (!pack.isDirectory()) continue;
-            if (!pack.getName().toLowerCase().startsWith("resource_pack")) continue;
+            if (!StudioConfig.isResourcePack(pack.getName())) continue;
             Map<String, Object> terrain = readTerrain(new File(pack, "textures/terrain_texture.json"));
             if (terrain.isEmpty()) continue;
             readBlocksJson(new File(pack, "blocks.json"), terrain);
@@ -284,7 +284,7 @@ public final class BlockTextureLib {
         for (File pack : roots) {
             if (!pack.isDirectory()) continue;
             String pn = pack.getName().toLowerCase();
-            if (!pn.startsWith("resource_pack")) continue;
+            if (!StudioConfig.isResourcePack(pn)) continue;
             File f = new File(pack, path.endsWith(".png") ? path : path + ".png");
             if (!f.isFile()) continue;
             try (FileInputStream in = new FileInputStream(f)) {
