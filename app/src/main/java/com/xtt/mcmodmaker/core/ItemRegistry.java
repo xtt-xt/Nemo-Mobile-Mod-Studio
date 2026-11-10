@@ -204,11 +204,37 @@ public final class ItemRegistry {
         }
     }
 
-    /** 读 lang：键同时收「完整 id」和「短名」两种写法，前者优先。 */
+    /**
+     * 各语言的优先级，数字小的优先。
+     *
+     * 一个物品在 zh_CN / zh_TW / en_US 里各有一条显示名，
+     * 之前的写法是「带命名空间的键直接覆盖」，文件按目录顺序读完，
+     * en_US 最后读就把中文顶掉了 —— 界面上全变成 Magenta Blast Glass。
+     * 现在固定中文优先，其次繁体，最后才用英文。
+     */
+    private static int langPriority(String fileName) {
+        String n = fileName.toLowerCase();
+        if (n.startsWith("zh_cn") || n.startsWith("zh_hans")) return 0;
+        if (n.startsWith("zh_tw") || n.startsWith("zh_hant") || n.startsWith("zh_hk")) return 1;
+        if (n.startsWith("zh")) return 2;
+        if (n.startsWith("en_us")) return 3;
+        if (n.startsWith("en")) return 4;
+        return 5;
+    }
+
+    /**
+     * 读 lang：完整 id（带命名空间）和短名各存一份，前者优先；
+     * 同一个键按语言优先级保留，中文不会被英文覆盖。
+     */
     private static Map<String, String> readLangNames(File projectDir) {
-        Map<String, String> out = new HashMap<>();
+        // 两份：带命名空间的完整键、不带命名空间的短名
+        Map<String, String> full = new HashMap<>();
+        Map<String, Integer> fullPri = new HashMap<>();
+        Map<String, String> brief = new HashMap<>();
+        Map<String, Integer> briefPri = new HashMap<>();
+
         File[] roots = projectDir.listFiles();
-        if (roots == null) return out;
+        if (roots == null) return new HashMap<>();
         for (File pack : roots) {
             if (!pack.isDirectory()) continue;
             if (!StudioConfig.isResourcePack(pack.getName())) continue;
@@ -217,6 +243,7 @@ public final class ItemRegistry {
             if (langs == null) continue;
             for (File l : langs) {
                 if (!l.getName().toLowerCase().endsWith(".lang")) continue;
+                int pri = langPriority(l.getName());
                 String content = FileUtils.readText(l);
                 if (content == null || content.isEmpty()) continue;
                 if (content.startsWith("\uFEFF")) content = content.substring(1);
@@ -232,14 +259,29 @@ public final class ItemRegistry {
                     if (!key.endsWith(".name")) continue;
                     String mid = key.substring(key.indexOf('.') + 1, key.length() - 5);
                     if (mid.isEmpty()) continue;
-                    // 完整 id（带命名空间）优先，短名只作兜底
-                    if (mid.contains(":") || !out.containsKey(mid)) {
-                        out.put(mid, value);
+                    if (mid.contains(":")) {
+                        putIfBetter(full, fullPri, mid, value, pri);
+                    } else {
+                        putIfBetter(brief, briefPri, mid, value, pri);
                     }
                 }
             }
         }
+        // 合成一张表：完整 id 放原键，短名照旧放原键。
+        // 两边同名的极少数情况以完整 id 为准（先放短名，再用完整 id 覆盖它）
+        Map<String, String> out = new HashMap<>(brief);
+        out.putAll(full);
         return out;
+    }
+
+    /** 没有，或者已有的是更低优先级的语言，才写进去。 */
+    private static void putIfBetter(Map<String, String> values, Map<String, Integer> prios,
+                                    String key, String value, int pri) {
+        Integer old = prios.get(key);
+        if (old == null || pri < old) {
+            values.put(key, value);
+            prios.put(key, pri);
+        }
     }
 
     private static String lookupName(Map<String, String> names, String identifier) {
