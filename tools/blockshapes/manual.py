@@ -3,13 +3,18 @@
 import jbake as j
 
 
-def boxb(x0, y0, z0, x1, y1, z1, slots):
-    """一个六面盒子，slots = [up,down,north,south,east,west] 的贴图槽号"""
+def boxb(x0, y0, z0, x1, y1, z1, slots, uvrect=None, uvface=None):
+    """一个六面盒子。slots = [up,down,north,south,east,west] 的贴图槽号。
+
+    uvrect 给四壁统一用一块贴图区域；uvface 可以按面单独覆盖（钟身顶部是圆形的 bell_top）。
+    """
     e = {'from': [x0, y0, z0], 'to': [x1, y1, z1]}
     out = []
     for d in j.DIRS:
         verts = j.corner_pos(e, d)
-        uv = [0.0, 0.0, 16.0, 16.0]
+        uv = list(uvrect) if uvrect else [0.0, 0.0, 16.0, 16.0]
+        if uvface and j.OUT_IDX[d] in uvface:
+            uv = list(uvface[j.OUT_IDX[d]])
         pairs = []
         for (su, sv) in j.uv_slots(d):
             pairs += [uv[0] + (uv[2] - uv[0]) * su, uv[1] + (uv[3] - uv[1]) * sv]
@@ -47,9 +52,25 @@ def banner():
 
 
 def bell():
-    # 钟体 + 上面的吊杆。bell_side 是整块钟的侧图，所以钟体就是一个盒子
-    out = boxb(5, 4, 5, 11, 11, 11, [0, 1, 2, 3, 2, 2])
-    out += boxb(7, 11, 7, 9, 16, 9, [0, 0, 0, 0, 0, 0])
+    """钟：两根石柱夹着，上面一根木横杆，钟体挂在横杆下面。
+
+    基岩版给的六面是 up=bell_top down=bell_bottom n/s=bell_side
+    east=planks_big_oak（横杆）west=stone（柱子），所以槽 4 是木头、槽 5 是石头。
+    bell_side 这张图里上半截是窄的钟身（x1..7），下半截两行是外翻的钟口（x0..8），
+    按这两段分别切给钟身和钟口，钟身就不会被拉成一整个方块。
+    """
+    out = []
+    # 两根石柱
+    for x0 in (0, 14):
+        out += boxb(x0, 0, 6, x0 + 2, 16, 10, [5, 5, 5, 5, 5, 5])
+    # 木横杆
+    out += boxb(2, 13, 7, 14, 15, 9, [4, 4, 4, 4, 4, 4])
+    # 钟身：窄，四壁用 bell_side 上半截
+    out += boxb(5, 5, 5, 11, 14, 11, [0, 1, 2, 3, 2, 2], [1, 0, 7, 7],
+                {0: [0, 0, 8, 8], 1: [0, 0, 8, 8]})
+    # 钟口：外翻比钟身宽一圈
+    out += boxb(4, 3, 4, 12, 5, 12, [2, 1, 2, 3, 2, 2], [0, 7, 8, 9],
+                {1: [0, 0, 8, 8]})
     return out
 
 

@@ -104,9 +104,51 @@ def build_one(name, force):
 
 
 def r(v):
-    s = '%.2f' % v
-    s = s.rstrip('0').rstrip('.')
-    return '0' if s in ('-0', '') else s
+    """取两位小数，写成数字（不写字符串，文件小一半）。"""
+    x = round(float(v), 2)
+    return 0 if x == 0 else x
+
+
+WOOD = {'dark_oak': 'big_oak'}
+
+
+def norm_tex(n):
+    """贴图短名归一：去数字、去掉木头叫法差异（基岩版 dark_oak 叫 big_oak）"""
+    n = n.lower().replace('minecraft:', '')
+    if n.startswith('block/'):
+        n = n[6:]
+    n = re.sub(r'\d+', '', n)
+    for a, b in WOOD.items():
+        n = n.replace(a, b)
+    return n
+
+
+def tex_score(java, bedrock):
+    """java 模型里的贴图变量 vs 基岩版这张脸的贴图名，越大越像"""
+    if java == bedrock:
+        return 100
+    a, b = norm_tex(java), norm_tex(bedrock)
+    if a == b:
+        return 90
+    ta = sorted(t for t in re.split(r'[_\-]', a) if t)
+    tb = sorted(t for t in re.split(r'[_\-]', b) if t)
+    if ta == tb:
+        return 85
+    if a in b or b in a:
+        return 70
+    # 至少主词对上（stonecutter_side vs stonecutter_side）
+    if ta and tb and ta[0] == tb[0]:
+        return 40
+    return 0
+
+
+def pick_slot(java, bases, fallback):
+    best, bestScore = fallback, 0
+    for i, base in enumerate(bases):
+        s = tex_score(java, base)
+        if s > bestScore:
+            best, bestScore = i, s
+    return best
 
 
 def pack(q, six=None):
@@ -119,13 +161,7 @@ def pack(q, six=None):
         if isinstance(tex, int):
             slot = tex
         elif tex and bases:
-            if tex in bases:
-                slot = bases.index(tex)
-            else:
-                for k, b in enumerate(bases):
-                    if b.endswith(tex) or tex.endswith(b):
-                        slot = k
-                        break
+            slot = pick_slot(tex, bases, idx)
         row = [idx, slot]
         row += [r(x) for x in uv]
         for p in verts:

@@ -207,15 +207,21 @@ public final class ModelRenderer {
         return f.normal[0] + f.normal[1] + f.normal[2] > 0.0001f;
     }
 
-    /** 明暗：顶面最亮，+z 面次之，+x 面最暗 —— 和原版图标一致。 */
+    /**
+     * 明暗：顶面最亮，侧面依次变暗，底面最暗。
+     *
+     * 游戏里用的是 1.0 / 0.8 / 0.6 / 0.5，直接照搬会把本来就很暗的贴图
+     * （铁砧、深色石头）压成一团黑，图标缩到 40 多像素就更看不清，所以
+     * 把最暗的一档抬高一些，保留立体感但不丢细节。
+     */
     private static float shadeOf(BlockModel.Face f) {
         float[] n = f.normal;
         float ax = Math.abs(n[0]);
         float ay = Math.abs(n[1]);
         float az = Math.abs(n[2]);
-        if (ay >= ax && ay >= az) return n[1] > 0 ? 1.0f : 0.45f;
-        if (az >= ax) return n[2] > 0 ? 0.8f : 0.7f;
-        return n[0] > 0 ? 0.6f : 0.7f;
+        if (ay >= ax && ay >= az) return n[1] > 0 ? 1.0f : 0.62f;
+        if (az >= ax) return n[2] > 0 ? 0.88f : 0.80f;
+        return n[0] > 0 ? 0.74f : 0.82f;
     }
 
     private static Bitmap textureFor(Context context, BlockModels.Spec spec,

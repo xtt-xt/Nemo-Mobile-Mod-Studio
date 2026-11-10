@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """把官方 Java 版的方块模型摊平成「显式四边形」,供 app 端直接画。"""
-import zipfile, json, re
+import zipfile, json, re, os
 
-Z = zipfile.ZipFile('/tmp/client263.jar')
+_JAR = os.environ.get('MCCLIENT_JAR') or '/workspace/ne/client.jar'
+Z = zipfile.ZipFile(_JAR)
 _cache = {}
 
 def raw(path):
@@ -140,7 +141,7 @@ BOOL_PREF = {'up': 'true', 'north': 'false', 'south': 'false', 'east': 'false', 
              'side_chain': 'false', 'berries': 'false', 'bottom': 'false', 'slot_0_occupied': 'false',
              'slot_1_occupied': 'false', 'slot_2_occupied': 'false', 'slot_3_occupied': 'false',
              'slot_4_occupied': 'false', 'slot_5_occupied': 'false', 'tips': 'false'}
-STR_PREF = {'facing': 'north', 'half': 'bottom', 'shape': 'straight', 'axis': 'y',
+STR_PREF = {'face': 'floor', 'facing': 'north', 'half': 'bottom', 'shape': 'straight', 'axis': 'y',
             'age': '0', 'stage': '0', 'level': '0', 'moisture': '0', 'distance': '7',
             'layers': '1', 'note': '0', 'instrument': 'harp', 'rotation': '0',
             'hinge': 'left', 'part': 'foot', 'type': 'bottom', 'mode': 'compare',
@@ -275,12 +276,33 @@ def resolve_tex(texdict, var):
     return v
 
 
+def dir_from_verts(verts):
+    """按顶点绕序判断这张面朝哪 —— 方块状态转过之后，模型里的 north 可能已经朝南了。"""
+    a, b, c = verts[0], verts[1], verts[2]
+    u = [b[i]-a[i] for i in range(3)]
+    v = [c[i]-a[i] for i in range(3)]
+    cr = [u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0]]
+    ln = sum(x*x for x in cr) ** 0.5
+    if ln < 1e-9:
+        return None
+    cr = [x/ln for x in cr]
+    ax = max(range(3), key=lambda i: abs(cr[i]))
+    if ax == 1:
+        return 0 if cr[1] > 0 else 1
+    if ax == 2:
+        return 3 if cr[2] > 0 else 2
+    return 4 if cr[0] > 0 else 5
+
+
 def from_elements(els, xr=0, yr=0, texdict=None):
     quads = []
     for e in els:
         for idx, verts, uv, tex in bake_element(e):
             verts = rot_block(verts, xr, yr)
-            quads.append([idx, [list(p) for p in verts], uv, resolve_tex(texdict, tex)])
+            d = dir_from_verts(verts)
+            if d is None:
+                continue
+            quads.append([d, [list(p) for p in verts], uv, resolve_tex(texdict, tex)])
     return quads
 
 def build_block(name, prefer=None):

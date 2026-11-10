@@ -83,7 +83,7 @@ public final class VanillaShapes {
                     f.verts[k][1] = (float) row.getDouble(11 + k * 3);
                     f.verts[k][2] = (float) row.getDouble(12 + k * 3);
                 }
-                crossNormal(f, NORMALS[dir]);
+                crossNormal(f);
                 f.texture = sixFaces[slot];
                 faces.add(f);
             }
@@ -96,10 +96,14 @@ public final class VanillaShapes {
     }
 
     /**
-     * 法线：用三个顶点叉乘算，斜着转过的面（十字植物、火把）也能对。
-     * 叉乘退化成 0 时才用方向法线兜底。
+     * 法线直接用三个顶点叉乘算。
+     *
+     * 不能拿「方向下标对应的法线」去校方向：方块状态转过之后（比如铁砧 facing=north
+     * 是 180°），模型里的 north 面已经跑到南边去了，按下标校就会把法线翻到朝里，
+     * 整圈面被背面剔除，看起来像缺了一半。烘焙时绕序已经统一成朝外，叉乘就够了，
+     * 斜着转过的面（十字植物）也自然是对的。
      */
-    private static void crossNormal(BlockModel.Face f, float[] dirNormal) {
+    private static void crossNormal(BlockModel.Face f) {
         float[] a = f.verts[0], b = f.verts[1], c = f.verts[2];
         float ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
         float vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
@@ -108,14 +112,10 @@ public final class VanillaShapes {
         float nz = ux * vy - uy * vx;
         float len = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
         if (len < 1e-5f) {
-            f.normal[0] = dirNormal[0];
-            f.normal[1] = dirNormal[1];
-            f.normal[2] = dirNormal[2];
+            f.normal[0] = 0;
+            f.normal[1] = 1;
+            f.normal[2] = 0;
             return;
-        }
-        // 折线方向和面朝向不一致时（旋转过的盒子）按方向法线定一侧
-        if (nx * dirNormal[0] + ny * dirNormal[1] + nz * dirNormal[2] < 0) {
-            nx = -nx; ny = -ny; nz = -nz;
         }
         f.normal[0] = nx / len;
         f.normal[1] = ny / len;
