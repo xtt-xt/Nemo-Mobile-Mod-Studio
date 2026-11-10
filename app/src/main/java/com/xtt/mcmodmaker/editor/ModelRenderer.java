@@ -75,6 +75,31 @@ public final class ModelRenderer {
         return out;
     }
 
+    /**
+     * 直接渲染一个已经构造好的模型（内置的原版方块形状走这里，不需要工程文件）。
+     *
+     * @param model 由 {@link com.xtt.mcmodmaker.core.VanillaShapes#build} 之类的代码拼出来
+     */
+    public static Bitmap renderModel(Context context, BlockModel model,
+                                     File projectDir, int sizePx) {
+        if (context == null || model == null || sizePx <= 0) return null;
+        StringBuilder key = new StringBuilder("v|").append(model.identifier)
+                .append('@').append(sizePx).append('@').append(model.faces.size());
+        if (projectDir != null) key.append('@').append(projectDir.getAbsolutePath());
+        String k = key.toString();
+        Bitmap cached = CACHE.get(k);
+        if (cached != null) return cached;
+
+        Bitmap out;
+        try {
+            out = draw(context, model, null, projectDir, sizePx);
+        } catch (Exception e) {
+            out = null;
+        }
+        if (out != null) CACHE.put(k, out);
+        return out;
+    }
+
     /** 参与渲染的一个面：投影后的四个点和平均深度。 */
     private static final class Shot {
         final BlockModel.Face face;
@@ -87,7 +112,11 @@ public final class ModelRenderer {
     }
 
     private static Bitmap draw(Context context, BlockModels.Spec spec, File projectDir, int sizePx) {
-        BlockModel model = spec.model;
+        return draw(context, spec.model, spec, projectDir, sizePx);
+    }
+
+    private static Bitmap draw(Context context, BlockModel model, BlockModels.Spec spec,
+                               File projectDir, int sizePx) {
         int w = sizePx * SS;
         int h = sizePx * SS;
 
@@ -160,7 +189,7 @@ public final class ModelRenderer {
                 screen[i][0] = Math.round(s.pts[i][0] * scale + offX);
                 screen[i][1] = Math.round(s.pts[i][1] * scale + offY);
             }
-            Bitmap tex = textureFor(context, spec, projectDir, s.face.key);
+            Bitmap tex = textureFor(context, spec, projectDir, s.face);
             drawQuad(buf, w, h, screen, s.face.uv, tex,
                     model.textureWidth, model.textureHeight, shadeOf(s.face));
         }
@@ -189,8 +218,13 @@ public final class ModelRenderer {
     }
 
     private static Bitmap textureFor(Context context, BlockModels.Spec spec,
-                                     File projectDir, String faceKey) {
-        String path = spec.textureFor(faceKey);
+                                     File projectDir, BlockModel.Face face) {
+        // 面上自己指定了贴图就用它（原版拼合形状里上下和四周常常不是同一张）
+        if (face.texture != null) {
+            return BlockTextureLib.texture(context, face.texture, projectDir);
+        }
+        if (spec == null) return null;
+        String path = spec.textureFor(face.key);
         if (path == null) return null;
         return BlockTextureLib.texture(context, path, projectDir);
     }

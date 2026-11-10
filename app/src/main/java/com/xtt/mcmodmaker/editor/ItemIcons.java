@@ -84,8 +84,16 @@ public final class ItemIcons {
             if (model != null) return model;
         }
 
-        // 1. 方块：有六面数据就渲染；有数据但缺贴图就用灰立方体
-        if (BlockTextureLib.resolveFaces(context, id, projectDir) != null) {
+        String[] six = BlockTextureLib.resolveFaces(context, id, projectDir);
+
+        // 1. 原版方块里有真实形状的（台阶、楼梯、栅栏、箱子……）按写死的形状拼出来
+        if (six != null && com.xtt.mcmodmaker.core.VanillaShapes.canShape(id)) {
+            Bitmap shaped = renderVanilla(context, id, projectDir, six, sizePx);
+            if (shaped != null) return shaped;
+        }
+
+        // 2. 方块：有六面数据就渲染成立方体；有数据但缺贴图就用灰立方体
+        if (six != null) {
             Bitmap cube = BlockIconRenderer.render(context, id, projectDir, sizePx);
             return cube != null ? cube : BlockIconRenderer.placeholder(context, sizePx);
         }
@@ -117,6 +125,19 @@ public final class ItemIcons {
             Bitmap bmp = BitmapFactory.decodeStream(in);
             if (bmp != null) RAW_CACHE.put(name, bmp);
             return bmp;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 用写死的原版形状渲染一次，结果进 ModelRenderer 的缓存。 */
+    private static Bitmap renderVanilla(Context context, String id, File projectDir,
+                                        String[] six, int sizePx) {
+        try {
+            com.xtt.mcmodmaker.core.BlockModel model =
+                    com.xtt.mcmodmaker.core.VanillaShapes.build(id, six);
+            if (model == null) return null;
+            return ModelRenderer.renderModel(context, model, projectDir, sizePx);
         } catch (Exception e) {
             return null;
         }

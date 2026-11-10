@@ -34,6 +34,13 @@ public final class BlockModel {
         public final float[] uv = new float[8];
         /** 变换后的法线，用来做背面剔除。 */
         public final float[] normal = new float[3];
+        /**
+         * 这个面单独用的贴图路径；null 表示用整个模型那张。
+         *
+         * 原版方块拼合形状时，一个盒子上下用顶面贴图、四周用侧面贴图，
+         * 甚至箱子的正面用另一张，所以贴图得跟到面上。
+         */
+        public String texture;
 
         Face(String key) {
             this.key = key;
@@ -50,6 +57,54 @@ public final class BlockModel {
         this.textureWidth = textureWidth;
         this.textureHeight = textureHeight;
         this.faces = faces;
+    }
+
+    /** 直接用一批面拼一个模型（内置的原版方块形状走这里）。 */
+    public static BlockModel of(String identifier, float textureWidth, float textureHeight,
+                                List<Face> faces) {
+        if (faces == null || faces.isEmpty()) return null;
+        return new BlockModel(identifier, textureWidth, textureHeight, faces);
+    }
+
+    /**
+     * 往列表里加一个有六个面的盒子。
+     *
+     * @param tex     六个面的贴图路径（顺序同 FACES），可整体或个别为 null
+     * @param clipUv  true = 按盒子在 16×16 方块里的位置裁剪贴图（台阶、楼梯用）；
+     *                false = 每个面都铺整张贴图（栅栏、门、火把这类专用贴图用）
+     */
+    public static void addBox(List<Face> out,
+                              float x0, float y0, float z0,
+                              float x1, float y1, float z1,
+                              String[] tex, boolean clipUv) {
+        if (x1 < x0) { float t = x0; x0 = x1; x1 = t; }
+        if (y1 < y0) { float t = y0; y0 = y1; y1 = t; }
+        if (z1 < z0) { float t = z0; z0 = z1; z1 = t; }
+        for (int i = 0; i < FACES.length; i++) {
+            String key = FACES[i];
+            float u, v, w, h;
+            if (clipUv) {
+                // 锁 UV：按这个面在方块 16×16 里的投影切（v 轴从上往下，所以 y 要翻）
+                switch (key) {
+                    case "up":
+                    case "down":
+                        u = x0; v = z0; w = x1 - x0; h = z1 - z0;
+                        break;
+                    default:
+                        u = ("east".equals(key) || "west".equals(key)) ? z0 : x0;
+                        w = ("east".equals(key) || "west".equals(key)) ? z1 - z0 : x1 - x0;
+                        v = 16f - y1;
+                        h = y1 - y0;
+                        break;
+                }
+            } else {
+                u = 0; v = 0; w = 16; h = 16;
+            }
+            Face f = buildFace(key, x0, y0, z0, x1, y1, z1, new float[]{u, v, w, h});
+            setLocalNormal(f);
+            f.texture = tex == null || i >= tex.length ? null : tex[i];
+            out.add(f);
+        }
     }
 
     /**
@@ -214,6 +269,28 @@ public final class BlockModel {
             }
             Face f = buildFace(key, x0, y0, z0, x1, y1, z1, rect);
             transformFace(f, m);
+            out.add(f);
+        }
+    }
+
+    /**
+     * 加一个盒子，六个面都铺同一块「贴图内的指定区域」。
+     *
+     * 火把、蜡烛这类：贴图里只有中间一小条是实体，剩下全透明。
+     * 直接铺整张会把实体压成一条细线，这里按贴图内容区域 1:1 铺上去。
+     */
+    public static void addBoxUv(List<Face> out,
+                                float x0, float y0, float z0,
+                                float x1, float y1, float z1,
+                                String[] tex, float u0, float v0, float uw, float uh) {
+        if (x1 < x0) { float t = x0; x0 = x1; x1 = t; }
+        if (y1 < y0) { float t = y0; y0 = y1; y1 = t; }
+        if (z1 < z0) { float t = z0; z0 = z1; z1 = t; }
+        for (int i = 0; i < FACES.length; i++) {
+            Face f = buildFace(FACES[i], x0, y0, z0, x1, y1, z1,
+                    new float[]{u0, v0, uw, uh});
+            setLocalNormal(f);
+            f.texture = tex == null || i >= tex.length ? null : tex[i];
             out.add(f);
         }
     }
