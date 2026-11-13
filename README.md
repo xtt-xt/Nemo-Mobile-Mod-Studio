@@ -50,15 +50,12 @@
 
   <!-- 小飞机网盘下载按钮 -->
   <a href="https://share.feijipan.com/s/69v3DEPR">
-    <img src="https://img.shields.io/badge/✈️%20小飞机网盘-不限速下载-orange?style=for-the-badge" alt="小飞机网盘下载">
+    <img src="https://img.shields.io/badge/✈️%20小飞机网盘下载-orange?style=for-the-badge" alt="小飞机网盘下载">
   </a>
 </div>
 
 <p style="text-align: center; margin-top: 10px;">
   前往 <a href="https://github.com/xtt-xt/Nemo-Mobile-Mod-Studio/releases"><strong>Releases 页面</strong></a> 或通过 <strong>123云盘</strong> / <strong>小飞机网盘</strong> 下载已编译好的 APK 文件（提取码：1379）。
-  <br/>
-  <strong>小飞机网盘：</strong><a href="https://share.feijipan.com/s/69v3DEPR">https://share.feijipan.com/s/69v3DEPR</a>
-  <br/>
   <strong>兼容设备：</strong>Android 6.0 (Marshmallow, API 23) 及以上系统，覆盖绝大多数 Android 手机和平板。
 </p>
 
@@ -92,8 +89,6 @@
 </ol>
 
 <h2>🏗 项目结构</h2>
-
-<p>项目在 <code>v1.0.2</code> 完成了一次大规模重构，从「三个巨型 Activity + 大量重复代码」整理为「分层架构」：</p>
 
 <pre>
 app/src/main/java/com/xtt/mcmodmaker/
