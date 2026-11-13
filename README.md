@@ -13,10 +13,10 @@
   <p>
     <img src="https://img.shields.io/badge/License-GPL--3.0-blue.svg" alt="License">
     <img src="https://img.shields.io/badge/Platform-Android-green.svg" alt="Platform">
-    <img src="https://img.shields.io/badge/Release-v1.1.0-orange.svg" alt="Release">
+    <img src="https://img.shields.io/badge/Release-v1.2.0-orange.svg" alt="Release">
     <img src="https://img.shields.io/badge/Java-8-green.svg" alt="Java 8">
-    <img src="https://img.shields.io/badge/AGP-7.0.2-blue.svg" alt="AGP 7.0.2">
-    <img src="https://img.shields.io/badge/Gradle-7.5-purple.svg" alt="Gradle 7.5">
+    <img src="https://img.shields.io/badge/AGP-8.7.3-blue.svg" alt="AGP 8.7.3">
+    <img src="https://img.shields.io/badge/Gradle-8.13-purple.svg" alt="Gradle 8.13">
   </p>
 
 <div align="center">
@@ -78,16 +78,16 @@
 <table>
   <tr><th>组件</th><th>版本</th><th>说明</th></tr>
   <tr><td>JDK</td><td>11+（推荐 17）</td><td>编译与运行 Gradle 所需</td></tr>
-  <tr><td>Gradle</td><td>7.5（已包含 Gradle Wrapper）</td><td>可直接使用 <code>./gradlew</code> 构建</td></tr>
-  <tr><td>Android SDK</td><td>compileSdk 30 / build-tools 33.0.0</td><td>需安装 <code>platforms;android-30</code> 与 <code>build-tools;33.0.0</code></td></tr>
-  <tr><td>Android Gradle Plugin</td><td>7.0.2</td><td>由 <code>build.gradle</code> 自动拉取</td></tr>
+  <tr><td>Gradle</td><td>8.13（已包含 Gradle Wrapper）</td><td>可直接使用 <code>./gradlew</code> 构建</td></tr>
+  <tr><td>Android SDK</td><td>compileSdk 35 / build-tools 35.0.0</td><td>需安装 <code>platforms;android-35</code> 与 <code>build-tools;35.0.0</code></td></tr>
+  <tr><td>Android Gradle Plugin</td><td>8.7.3</td><td>由 <code>build.gradle</code> 自动拉取</td></tr>
 </table>
 
 <h3>构建步骤</h3>
 <ol>
   <li>克隆仓库：<code>git clone https://github.com/xtt-xt/Nemo-Mobile-Mod-Studio.git</code></li>
   <li>配置 <code>local.properties</code>：写入 <code>sdk.dir=/path/to/android-sdk</code></li>
-  <li>执行 <code>gradle :app:assembleDebug</code></li>
+  <li>执行 <code>./gradlew :app:assembleDebug</code></li>
   <li>产物位于 <code>app/build/outputs/apk/debug/app-debug.apk</code></li>
 </ol>
 
